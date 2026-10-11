@@ -48,6 +48,18 @@
                 ],
                 "default": "全部发送"
             },
+            "hongguo": {
+                "description": "红果短剧",
+                "type": "string",
+                "hint": "每个分享链接解析指定一集；视频需要本地缓存，加密视频需要 ffmpeg。",
+                "options": [
+                    "关闭",
+                    "全部发送",
+                    "仅文本",
+                    "仅富媒体"
+                ],
+                "default": "全部发送"
+            },
             "netease": {
                 "description": "网易云音乐",
                 "type": "string",
@@ -256,7 +268,7 @@
             "gitee": {
                 "description": "Gitee",
                 "type": "string",
-                "hint": "支持公开仓库概况及 Issue 正文、评论，不展开 README 或代码文件。请选择全部发送或仅文本；仅富媒体时没有可发送内容。",
+                "hint": "公开仓库可发送概况与 README 截图；截图需要安装 Chromium。Issue 提供正文与评论。仅文本时不截图，仅富媒体时只发送仓库 README。",
                 "options": [
                     "关闭",
                     "全部发送",
@@ -323,7 +335,7 @@
             "github": {
                 "description": "GitHub",
                 "type": "string",
-                "hint": "支持公开仓库首页，展示仓库概况和简短介绍，不展开 README。请选择全部发送或仅文本；仅富媒体时没有可发送内容。",
+                "hint": "公开仓库首页可发送概况与 README 截图；截图需要安装 Chromium。仅文本时不截图，仅富媒体时只发送 README。",
                 "options": [
                     "关闭",
                     "全部发送",
@@ -335,7 +347,7 @@
             "gitlab": {
                 "description": "GitLab",
                 "type": "string",
-                "hint": "支持 gitlab.com 公开仓库概况及 Issue 正文、讨论，不支持自建站点。请选择全部发送或仅文本；仅富媒体时没有可发送内容。",
+                "hint": "gitlab.com 公开项目可发送概况与 README 截图；截图需要安装 Chromium。Issue 提供正文与讨论，不支持自建站点。仅文本时不截图。",
                 "options": [
                     "关闭",
                     "全部发送",
@@ -529,10 +541,7 @@
                     "render_paginate": {
                         "description": "长图自动分页",
                         "type": "bool",
-                        "condition": {
-                            "render_to_image": true
-                        },
-                        "hint": "开启后文本图片高度超过 1800 像素时按行拆分为多张图片依次发送，适合限制超长图片的聊天平台。",
+                        "hint": "默认关闭，文本图片和 README 截图保留为整张长图；开启后，高度超过 1800 像素时拆分为多张依次发送。此设置也适用于未开启文本转图片的 README 截图。",
                         "default": false
                     },
                     "render_separate_sections": {
@@ -1270,7 +1279,7 @@
             "github": {
                 "description": "GitHub 解析使用代理",
                 "type": "bool",
-                "hint": "需要先填写“代理地址”；仅用于获取公开仓库信息。",
+                "hint": "需要先填写“代理地址”；用于获取公开仓库信息与截取 README。",
                 "default": false
             }
         }

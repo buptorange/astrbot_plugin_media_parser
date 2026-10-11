@@ -14,8 +14,10 @@ import aiohttp
 from ..logger import logger
 
 from ..constants import Config
+from ..message_adapter.readme_renderer import render_readme_images
 from ..metadata_state import refresh_media_state
 from ..storage import cleanup_directory, cleanup_file
+from ..storage.cache_marker import stamp_subdir
 from ..types import MediaMetadata
 from .budget import (
     DownloadLimitExceeded,
@@ -42,6 +44,7 @@ class DownloadManager:
         max_concurrent_downloads: int = None,
         video_cover_only: bool = False,
         max_audio_size_mb: float = 30.0,
+        readme_paginate: bool = False,
     ):
         try:
             normalized_max_size = float(max_video_size_mb)
@@ -77,7 +80,9 @@ class DownloadManager:
         except (TypeError, ValueError):
             concurrency = Config.DOWNLOAD_MANAGER_MAX_CONCURRENT
         self._download_semaphore = asyncio.Semaphore(concurrency)
+        self._readme_semaphore = asyncio.Semaphore(1)
         self.video_cover_only = bool(video_cover_only)
+        self.readme_paginate = bool(readme_paginate)
 
         self._active_tasks: set[asyncio.Task] = set()
         self._shutting_down = False
@@ -388,6 +393,9 @@ class DownloadManager:
                                 proxy=proxy,
                                 max_bytes=(video_max_bytes if kind != "image" else None),
                                 image_tls_ciphers=item.get("image_tls_ciphers", ""),
+                                decryption_key=(
+                                    item.get("decryption_keys") or {}
+                                ).get(candidate),
                             )
                         if result and result.get("file_path"):
                             return {
@@ -494,6 +502,61 @@ class DownloadManager:
                 results.append(result)
         return results
 
+    async def _process_readme(
+        self,
+        metadata: MediaMetadata,
+        media_id: str,
+        on_sendable_media: Optional[Callable[[], Awaitable[None]]] = None,
+    ) -> None:
+        """将 README 截图插入图片区，保持后续音频的文件索引一致。"""
+        readme_url = metadata.get("readme_url")
+        if not readme_url or metadata.get("_enable_rich_media") is False:
+            return
+
+        paths: List[str] = []
+        reason = None
+        if not self.cache_dir_available:
+            reason = "媒体文件缓存目录不可用，无法生成 README 截图"
+        else:
+            async def render() -> List[str]:
+                async with self._readme_semaphore:
+                    if self._shutting_down:
+                        raise asyncio.CancelledError
+                    if on_sendable_media:
+                        await on_sendable_media()
+                    stamp_subdir(os.path.join(self.cache_dir, media_id))
+                    return await render_readme_images(
+                        readme_url,
+                        metadata.get("readme_selector", ""),
+                        os.path.join(self.cache_dir, media_id, "readme.png"),
+                        paginate=self.readme_paginate,
+                        proxy_url=metadata.get("proxy_url") or "",
+                    )
+
+            task = asyncio.create_task(render())
+            self._active_tasks.add(task)
+            try:
+                paths = await task
+                if not paths:
+                    raise RuntimeError("README 截图未生成有效图片")
+            except asyncio.CancelledError:
+                raise
+            except (ImportError, OSError, RuntimeError, ValueError, asyncio.TimeoutError) as exc:
+                reason = f"README 截图失败：{exc}"
+                logger.warning(reason)
+            finally:
+                self._active_tasks.discard(task)
+
+        # 网页链接仅保留为来源，成功只能使用本地图片，失败不得转为图片直链。
+        count = len(paths) if paths else 1
+        position = len(metadata["video_urls"]) + len(metadata["image_urls"])
+        metadata["image_urls"].extend([[readme_url] for _ in range(count)])
+        metadata["file_paths"][position:position] = paths or [None]
+        metadata["image_modes"].extend(["local" if paths else "skip"] * count)
+        metadata["image_skip_reasons"].extend([reason] * count)
+        metadata["image_status_codes"].extend([None] * count)
+        metadata["image_warnings"].extend([None] * count)
+
     # ── 主入口 ──────────────────────────────────────────
 
     async def process_metadata(
@@ -557,6 +620,7 @@ class DownloadManager:
         has_access_denied = False
 
         force_download = bool(metadata.get("video_force_download", False))
+        decryption_keys = metadata.get("video_decryption_keys", {})
         media_id = self._generate_media_id(url, metadata)
         local_items: List[Dict[str, Any]] = []
 
@@ -566,7 +630,10 @@ class DownloadManager:
         )
 
         for idx, url_list in enumerate(video_urls):
-            requires_local = self._video_requires_local(url_list, force_download)
+            encrypted = any(candidate in decryption_keys for candidate in url_list)
+            requires_local = self._video_requires_local(
+                url_list, force_download or encrypted
+            )
             contains_stream = any(
                 self._is_dash_url(u) or self._is_m3u8_url(u) for u in url_list
             )
@@ -577,7 +644,7 @@ class DownloadManager:
                 continue
 
             if requires_local and not self.cache_dir_available:
-                if force_download:
+                if force_download or encrypted:
                     video_skip_reasons[idx] = (
                         "媒体文件缓存目录不可用，无法处理必须下载到缓存的视频"
                     )
@@ -659,6 +726,7 @@ class DownloadManager:
                         "url_list": url_list,
                         "media_id": media_id,
                         "headers": metadata.get("video_headers", {}),
+                        "decryption_keys": decryption_keys,
                         "proxy": self._proxy_for(metadata, "video", proxy_addr),
                     }
                 )
@@ -666,6 +734,9 @@ class DownloadManager:
         for idx, url_list in enumerate(image_urls):
             source_url_list = cover_fallbacks.get(idx)
             if source_url_list is not None:
+                if any(candidate in decryption_keys for candidate in source_url_list):
+                    image_skip_reasons[idx] = "加密视频未提供封面，无法直接截取首帧"
+                    continue
                 if not source_url_list:
                     image_skip_reasons[idx] = "未找到可截取封面的视频URL"
                     continue
@@ -831,6 +902,7 @@ class DownloadManager:
         metadata["audio_status_codes"] = audio_status_codes
         metadata["audio_skip_reasons"] = audio_skip_reasons
         metadata["audio_size_limit_flags"] = audio_size_limit_flags
+        await self._process_readme(metadata, media_id, on_sendable_media)
         refresh_media_state(metadata)
 
         has_valid_media = metadata["has_valid_media"]

@@ -1,4 +1,4 @@
-"""Gitee 解析器，读取公开仓库概况、议题正文及有限评论。"""
+"""Gitee 解析器，读取仓库概况及 README 截图入口、议题正文与评论。"""
 
 import asyncio
 import json
@@ -18,6 +18,7 @@ from .base import BaseVideoParser
 
 
 BASE_URL = "https://gitee.com"
+README_SELECTOR = '#git-readme .markdown-body'
 GITEE_URL_RE = re.compile(
     r"(?<![A-Za-z0-9_.:/@%?=&#-])(?:https?://|//)?gitee\.com"
     r"[^\s<>\"'`()\[\]{}，。！？；：、（）【】《》「」,;!]*", re.IGNORECASE,
@@ -279,7 +280,7 @@ class GiteeParser(BaseVideoParser):
             url: Gitee 仓库根链接或议题链接。
 
         Returns:
-            纯文本仓库概况，或含议题正文和有限评论的元数据。
+            包含 README 截图请求的仓库概况，或含议题正文和有限评论的元数据。
         """
         parts = _link_parts(url)
         if not parts:
@@ -296,6 +297,8 @@ class GiteeParser(BaseVideoParser):
             }
             if not issue_id:
                 metadata["desc"] = self._description(repository)
+                metadata["readme_url"] = repository_url
+                metadata["readme_selector"] = README_SELECTOR
                 return metadata
             issue = await self._request_json(session, repository["full_name"] + "/issues/" + issue_id)
             self._validate_issue(issue, repository, issue_id)

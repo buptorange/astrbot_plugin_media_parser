@@ -45,6 +45,7 @@ PARSER_DISCOVERY_ORDER = (
     "douyin",
     "kuaishou",
     "acfun",
+    "hongguo",
     "netease",
     "ximalaya",
     "weibo",
@@ -546,7 +547,7 @@ async def parse_and_confirm_download(
 
     has_valid_media = enable_rich_media and any(
         not metadata.get("error")
-        and (bool(metadata.get("video_urls")) or bool(metadata.get("image_urls")))
+        and any(metadata.get(key) for key in ("video_urls", "image_urls", "readme_url"))
         for metadata in metadata_list
     )
     has_text_result = enable_text_metadata and any(

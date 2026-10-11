@@ -76,6 +76,7 @@ async def download_media(
     use_ffmpeg: bool = True,
     max_bytes: Optional[int] = None,
     image_tls_ciphers: str = "",
+    decryption_key: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """下载媒体文件
 
@@ -91,6 +92,7 @@ async def download_media(
         m3u8_handler: M3U8处理器（可选）
         use_ffmpeg: 是否使用ffmpeg（仅用于M3U8）
         image_tls_ciphers: 图片请求的 TLS 加密套件列表，空值使用会话默认设置。
+        decryption_key: 本地 CENC 视频解密密钥，不写入 URL 或日志。
 
     Returns:
         下载结果字典，包含file_path和size_mb字段，失败时为None
@@ -99,6 +101,26 @@ async def download_media(
         f"下载路由: url={media_url[:80]}..., type={media_type}, "
         f"cache_dir={'有' if cache_dir else '无'}"
     )
+
+    if decryption_key is not None:
+        if (
+            not cache_dir
+            or not media_url.startswith(("http://", "https://"))
+            or media_type not in (None, "video")
+            or detect_media_type(media_url) != "video"
+        ):
+            return {"file_path": None, "error": "加密视频必须使用本地 HTTP 视频下载"}
+        return await download_video_to_cache(
+            session=session,
+            video_url=media_url,
+            cache_dir=cache_dir,
+            media_id=media_id or "media",
+            index=index,
+            headers=headers,
+            proxy=proxy,
+            max_bytes=max_bytes,
+            decryption_key=decryption_key,
+        )
 
     actual_url = media_url
     dash_video_url = ""

@@ -1,6 +1,9 @@
 """普通视频直链下载处理器。"""
 
 import asyncio
+import os
+import re
+import uuid
 from typing import Dict, Any, List, Optional
 
 import aiohttp
@@ -8,9 +11,110 @@ import aiohttp
 from ...logger import logger
 
 from ...constants import Config
-from ..budget import merge_limit_sources
+from ...storage import cleanup_file
+from ..budget import classify_limit_source, merge_limit_sources, resolve_max_bytes
+from ..fileio import _wait_for_task_completion, run_blocking
 from ..utils import process_gather_results, generate_cache_file_path
 from .base import download_media_from_url
+
+
+async def _decrypt_video(
+    source_path: str,
+    output_path: str,
+    decryption_key: str,
+    max_bytes: Optional[int],
+) -> Dict[str, Any]:
+    """仅从本地读取 CENC 视频，成功解密后原子提交可发送文件。"""
+    temp_output = f"{output_path}.{uuid.uuid4().hex}.part.mp4"
+    process = None
+    spawn_task = None
+    try:
+        spawn_task = asyncio.create_task(
+            asyncio.create_subprocess_exec(
+                "ffmpeg",
+                "-y",
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-xerror",
+                "-protocol_whitelist",
+                "file",
+                "-decryption_key",
+                decryption_key,
+                "-i",
+                source_path,
+                # 只复制码流时，错误密钥也可能返回成功；首秒实际解码验证密钥。
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a?",
+                "-t",
+                "1",
+                "-f",
+                "null",
+                "-",
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a?",
+                "-c",
+                "copy",
+                "-movflags",
+                "+faststart",
+                temp_output,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+        )
+        process = await asyncio.shield(spawn_task)
+        await asyncio.wait_for(
+            process.communicate(), timeout=Config.VIDEO_DOWNLOAD_TIMEOUT
+        )
+        if process.returncode != 0:
+            return {"file_path": None, "error": "视频解密失败"}
+        output_size = await run_blocking(os.path.getsize, temp_output)
+        if output_size <= 0:
+            return {"file_path": None, "error": "视频解密输出为空"}
+        if output_size > resolve_max_bytes(max_bytes, is_video=True):
+            return {
+                "file_path": None,
+                "size_mb": output_size / (1024 * 1024),
+                "error": "视频解密输出超过下载硬限制",
+                "limit_source": classify_limit_source(
+                    max_bytes, is_video=True, observed_bytes=output_size
+                ),
+            }
+        os.replace(temp_output, output_path)
+        return {
+            "file_path": os.path.normpath(output_path),
+            "size_mb": output_size / (1024 * 1024),
+        }
+    except asyncio.TimeoutError:
+        return {"file_path": None, "error": "视频解密超时"}
+    except asyncio.CancelledError:
+        raise
+    except FileNotFoundError:
+        return {"file_path": None, "error": "ffmpeg未找到或视频解密未生成输出"}
+    except (OSError, ValueError):
+        return {"file_path": None, "error": "视频解密处理失败"}
+    finally:
+        # 启动子进程期间也可能取消；先取得启动结果，再终止并等待释放文件。
+        if spawn_task is not None and process is None:
+            await _wait_for_task_completion(spawn_task)
+            if not spawn_task.cancelled() and spawn_task.exception() is None:
+                process = spawn_task.result()
+        if process is not None:
+            if process.returncode is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+            reap_task = asyncio.create_task(process.communicate())
+            await _wait_for_task_completion(reap_task)
+            if not reap_task.cancelled():
+                reap_task.exception()
+        cleanup_file(temp_output)
 
 
 async def download_video_to_cache(
@@ -23,6 +127,7 @@ async def download_video_to_cache(
     proxy: str = None,
     max_bytes: Optional[int] = None,
     budget=None,
+    decryption_key: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """下载视频到缓存目录
 
@@ -34,41 +139,76 @@ async def download_video_to_cache(
         index: 索引
         headers: 请求头字典
         proxy: 代理地址（可选）
+        decryption_key: CENC 的 32 位十六进制密钥；指定时仅返回成功解密的文件。
 
     Returns:
         包含file_path和size_mb的字典，失败时为None
     """
     if not cache_dir:
         return None
+    if decryption_key is not None and (
+        not isinstance(decryption_key, str)
+        or not re.fullmatch(r"[0-9a-fA-F]{32}", decryption_key)
+    ):
+        return {"file_path": None, "error": "视频解密密钥格式无效"}
 
     logger.debug(f"开始下载视频: {video_url}, media_id={media_id}, index={index}")
 
+    encrypted_path = None
+    output_path = None
+    decrypted = False
+
     def file_path_generator(content_type: str, url: str) -> str:
-        return generate_cache_file_path(
+        nonlocal encrypted_path, output_path
+        output_path = generate_cache_file_path(
             cache_dir=cache_dir,
             media_id=media_id,
             media_type="video",
             index=index,
-            content_type=content_type,
+            content_type="video/mp4" if decryption_key is not None else content_type,
             url=url,
         )
+        if decryption_key is not None:
+            encrypted_path = f"{output_path}.encrypted.mp4"
+            return encrypted_path
+        return output_path
 
-    (
-        file_path,
-        size_mb,
-        status_code,
-        error,
-        limit_source,
-    ) = await download_media_from_url(
-        session=session,
-        media_url=video_url,
-        file_path_generator=file_path_generator,
-        is_video=True,
-        headers=headers,
-        proxy=proxy,
-        max_bytes=max_bytes,
-        budget=budget,
-    )
+    try:
+        (
+            file_path,
+            size_mb,
+            status_code,
+            error,
+            limit_source,
+        ) = await download_media_from_url(
+            session=session,
+            media_url=video_url,
+            file_path_generator=file_path_generator,
+            is_video=True,
+            headers=headers,
+            proxy=proxy,
+            max_bytes=max_bytes,
+            budget=budget,
+        )
+        if file_path and decryption_key is not None:
+            result = await _decrypt_video(
+                file_path, output_path, decryption_key, max_bytes
+            )
+            decrypted = bool(result.get("file_path"))
+            result["status_code"] = status_code
+            return result
+    finally:
+        if encrypted_path is not None:
+            try:
+                encrypted_size = os.path.getsize(encrypted_path)
+            except OSError:
+                encrypted_size = 0
+            cleanup_file(encrypted_path)
+            if budget is not None and encrypted_size and not decrypted:
+                release_task = asyncio.create_task(budget.release(encrypted_size))
+                await _wait_for_task_completion(release_task)
+                if not release_task.cancelled():
+                    release_task.exception()
 
     if file_path:
         logger.debug(f"视频下载完成: {video_url} -> {file_path}, {size_mb}MB")

@@ -20,6 +20,10 @@ class MediaMetadata(TypedDict, total=False):
     timestamp: str
     platform: str
 
+    # README 截图请求：由平台提供规范仓库地址与正文区域选择器，在下载阶段生成本地图片。
+    readme_url: str
+    readme_selector: str
+
     video_urls: List[List[str]]
     video_cover_urls: List[List[str]]
     image_urls: List[List[str]]
@@ -28,6 +32,8 @@ class MediaMetadata(TypedDict, total=False):
     image_headers: Dict[str, str]
     image_tls_ciphers: str
     video_headers: Dict[str, str]
+    # 按完整 HTTP 视频 URL 保存 CENC 的 32 位十六进制密钥，不得放入链接或日志。
+    video_decryption_keys: Dict[str, str]
     video_force_download: bool
 
     access_status: str

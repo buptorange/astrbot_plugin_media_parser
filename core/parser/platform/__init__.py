@@ -3,6 +3,7 @@ from .bilibili import BilibiliParser
 from .douyin import DouyinParser
 from .kuaishou import KuaishouParser
 from .acfun import AcfunParser
+from .hongguo import HongguoParser
 from .netease import NeteaseParser
 from .ximalaya import XimalayaParser
 from .weibo import WeiboParser
@@ -36,6 +37,7 @@ __all__ = [
     'DouyinParser',
     'KuaishouParser',
     'AcfunParser',
+    'HongguoParser',
     'NeteaseParser',
     'XimalayaParser',
     'WeiboParser',

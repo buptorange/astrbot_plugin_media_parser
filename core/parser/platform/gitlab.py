@@ -1,4 +1,4 @@
-"""GitLab 解析器，读取公开仓库概况、议题正文及有限讨论。"""
+"""GitLab 解析器，读取仓库概况及 README 截图入口、议题正文与讨论。"""
 
 import asyncio
 import json
@@ -19,6 +19,7 @@ from .base import BaseVideoParser
 
 
 BASE_URL = "https://gitlab.com"
+README_SELECTOR = 'article.readme-holder .md'
 GITLAB_URL_RE = re.compile(
     r"(?<![A-Za-z0-9_.:/@%?=&#-])(?:https?://|//)?gitlab\.com"
     r"[^\s<>\"'`()\[\]{}，。！？；：、（）【】《》「」,;!]*", re.IGNORECASE,
@@ -350,7 +351,7 @@ class GitLabParser(BaseVideoParser):
             url: GitLab 项目根链接或 Issue 链接。
 
         Returns:
-            纯文本仓库概况，或含议题正文和评论的元数据。
+            包含 README 截图请求的仓库概况，或含议题正文和评论的元数据。
         """
         parts = _link_parts(url)
         if not parts:
@@ -377,6 +378,8 @@ class GitLabParser(BaseVideoParser):
                 except RuntimeError as exc:
                     logger.warning(f"GitLab 项目语言获取失败，保留仓库概况：{exc}")
                 metadata["desc"] = self._description(project, languages)
+                metadata["readme_url"] = project_url
+                metadata["readme_selector"] = README_SELECTOR
                 return metadata
             issue, _ = await self._request_json(session, f"{BASE_URL}/api/v4/projects/{project['id']}/issues/{issue_id}")
             self._validate_issue(issue, project, issue_id)

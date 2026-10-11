@@ -1,4 +1,4 @@
-"""GitHub 仓库解析器，提取公开仓库概况与简短介绍。"""
+"""GitHub 仓库解析器，提取公开仓库概况与 README 截图入口。"""
 
 import asyncio
 import re
@@ -30,6 +30,7 @@ RESERVED_ROUTES = frozenset({
 })
 MAX_DESCRIPTION_LENGTH = 400
 MAX_REDIRECTS = 2
+README_SELECTOR = 'article.markdown-body, #readme .markdown-body'
 
 
 def _repository_parts(url: str) -> Optional[Tuple[str, str]]:
@@ -85,13 +86,13 @@ def _api_url(url: str) -> bool:
 
 
 class GitHubParser(BaseVideoParser):
-    """通过官方接口解析公开 GitHub 仓库，不读取 README 或下载文件。"""
+    """通过官方接口解析公开仓库，并提供首页 README 截图入口。"""
 
     def __init__(self, proxy_url: Optional[str] = None) -> None:
         """初始化仓库解析器。
 
         Args:
-            proxy_url: 仅供仓库接口请求使用的代理地址。
+            proxy_url: 供仓库接口和 README 页面截图使用的代理地址。
         """
         super().__init__("github")
         self.proxy_url = proxy_url
@@ -253,7 +254,7 @@ class GitHubParser(BaseVideoParser):
     async def parse(
         self, session: aiohttp.ClientSession, url: str
     ) -> Optional[MediaMetadata]:
-        """解析公开仓库根链接并返回纯文本概况。
+        """解析公开仓库根链接，返回概况与 README 截图入口。
 
         Args:
             session: 已有的异步 HTTP 会话。
@@ -273,6 +274,9 @@ class GitHubParser(BaseVideoParser):
             "author": repository["owner"]["login"],
             "desc": self._build_description(repository),
             "platform": self.name,
+            "readme_url": "https://github.com/" + repository["full_name"],
+            "readme_selector": README_SELECTOR,
+            "proxy_url": self.proxy_url,
             "video_urls": [],
             "image_urls": [],
         }

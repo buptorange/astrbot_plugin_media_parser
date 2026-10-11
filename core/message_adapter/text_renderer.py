@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, List
 
@@ -20,7 +22,25 @@ DEFAULT_LINE_SPACING = 1.55
 DEFAULT_PARAGRAPH_SPACING = 1.0
 PAGINATED_MAX_HEIGHT = 1800
 TEXT_SECTION_SEPARATOR = "-------------------------------------"
-NO_LINE_START_CHARS = "，。！？；：、,.!?;:)]}）】》"
+NO_LINE_START_CHARS = "，。！？；：、,.!?;:)]}）】》〉」』”’％%…"
+NO_LINE_END_CHARS = "([{（【《〈「『“‘"
+METADATA_LABELS = frozenset(
+    {
+        "标题", "作者", "发布时间", "视频大小", "时长", "访问提示", "解析失败",
+        "原始链接", "点赞", "时间", "简介/正文",
+    }
+)
+
+
+@dataclass
+class _TextLine:
+    """保存测量后的文字行，使绘制与分页共用同一份尺寸。"""
+
+    text: str
+    kind: str
+    height: int
+    label: str = ""
+    keep_with_next: bool = False
 
 
 async def render_text_metadata_images(
@@ -111,29 +131,34 @@ def _remove_rendered_pages(output: Path) -> None:
             pass
 
 
-def _paginate_lines(
-    lines: List[str],
-    heights: List[int],
-    capacity: int,
-) -> List[List[str]]:
-    """按可用高度拆分正文行，页首不保留空行或分隔线。"""
-    pages: List[List[str]] = []
-    current: List[str] = []
+def _paginate_lines(lines: List[_TextLine], capacity: int) -> List[List[_TextLine]]:
+    """按测量高度分页，让标题与紧随的内容尽量留在同一页。"""
+    pages: List[List[_TextLine]] = []
+    current: List[_TextLine] = []
     used = 0
-    for line, height in zip(lines, heights):
-        if current and used + height > capacity:
+    for index, line in enumerate(lines):
+        required = line.height
+        following = index
+        while lines[following].keep_with_next and following + 1 < len(lines):
+            following += 1
+            required += lines[following].height
+        # 特别长的标题允许逐行跨页；最后一行仍与下一条内容同行分页。
+        if required > capacity:
+            required = line.height
+        if current and used + required > capacity:
+            while current and current[-1].kind in ("blank", "separator"):
+                current.pop()
             pages.append(current)
             current = []
             used = 0
-        if not current and line in ("", TEXT_SECTION_SEPARATOR):
+        if not current and line.kind in ("blank", "separator"):
             continue
         current.append(line)
-        used += height
+        used += line.height
     if current:
+        while len(current) > 1 and current[-1].kind in ("blank", "separator"):
+            current.pop()
         pages.append(current)
-    for page in pages:
-        while len(page) > 1 and page[-1] in ("", TEXT_SECTION_SEPARATOR):
-            page.pop()
     return pages or [lines]
 
 
@@ -156,105 +181,52 @@ def _render_text_metadata_image_sync(
         raise RuntimeError("缺少 Pillow，无法渲染文本元数据图片") from exc
 
     palette = _style_palette(style)
-    regular_font = _load_font(ImageFont, font_size, font_family=font_family)
-    title_font = _load_font(
-        ImageFont,
-        max(font_size + 4, int(font_size * 1.35)),
-        True,
-        font_family,
-    )
-    label_font = _load_font(
-        ImageFont,
-        max(font_size, int(font_size * 1.05)),
-        True,
-        font_family,
-    )
-
-    probe = Image.new("RGB", (width, 200), palette["background"])
+    meta_size = max(MIN_RENDER_FONT_SIZE, round(font_size * 0.83))
+    fonts = {
+        "body": _load_font(ImageFont, font_size, font_family=font_family),
+        "title": _load_font(ImageFont, round(font_size * 1.5), True, font_family),
+        "section": _load_font(ImageFont, font_size, True, font_family),
+        "author": _load_font(ImageFont, font_size, True, font_family),
+        "meta": _load_font(ImageFont, meta_size, font_family=font_family),
+        "label": _load_font(ImageFont, meta_size, True, font_family),
+    }
+    probe = Image.new("RGB", (width, 1), palette["background"])
     probe_draw = ImageDraw.Draw(probe)
-    margin = max(34, width // 12)
-    content_width = width - margin * 2
-    title_lines = _wrap_text(
-        probe_draw,
-        title.strip() or "媒体解析结果",
-        title_font,
-        content_width,
+    margin = max(24, width // 30)
+    padding = max(28, width // 20)
+    body_x = margin + padding
+    content_width = width - body_x * 2
+    lines = _layout_text(
+        probe_draw, text, fonts, content_width, line_spacing, paragraph_spacing,
     )
-    body_lines = _wrap_text_multiline(
-        probe_draw,
-        text,
-        regular_font,
-        content_width - 42,
+    page_font = fonts["meta"]
+    header = _wrap_text(
+        probe_draw, title.strip() or "媒体解析结果", page_font, content_width - 24,
     )
-    title_line_height = _line_height(probe_draw, title_font, 1.35)
-    body_line_height = _line_height(probe_draw, regular_font, line_spacing)
-    blank_line_height = round(body_line_height * paragraph_spacing)
-    label_line_height = _line_height(probe_draw, label_font, 1.4)
-    separator_height = max(body_line_height // 2, label_line_height // 2)
-    line_heights = [
-        _row_height(line, body_line_height, blank_line_height, separator_height)
-        for line in body_lines
-    ]
-
-    page_font = _load_font(
-        ImageFont,
-        max(MIN_RENDER_FONT_SIZE, font_size - 4),
-        font_family=font_family,
-    )
-    top_padding = 46
-    title_gap = 30
-    card_top = top_padding + len(title_lines) * title_line_height + title_gap
-    # 分页时底部留白需容纳页码；卡片上下内边距与底部留白不计入正文行高度。
-    paged_bottom = max(46, _line_height(probe_draw, page_font, 1.2) + 24)
-    page_capacity = max_height - card_top - 34 - 34 - paged_bottom
-    if max_height > 0 and page_capacity >= body_line_height:
-        pages = _paginate_lines(body_lines, line_heights, page_capacity)
-    else:
-        pages = [body_lines]
-    bottom_space = paged_bottom if len(pages) > 1 else 46
+    header_height = _line_height(probe_draw, page_font, 1.5)
+    body_top = margin + padding + len(header) * header_height + 24
+    footer_height = header_height + 28
+    capacity = max_height - body_top - padding - footer_height - margin
+    pages = _paginate_lines(lines, capacity) if max_height > 0 else [lines]
 
     output.parent.mkdir(parents=True, exist_ok=True)
     written: List[str] = []
     try:
         for page_index, page_lines in enumerate(pages, start=1):
-            page_heights = [
-                _row_height(line, body_line_height, blank_line_height, separator_height)
-                for line in page_lines
-            ]
-            card_bottom = card_top + 34 + sum(page_heights) + 34
-            height = card_bottom + bottom_space
+            card_bottom = body_top + sum(line.height for line in page_lines) + padding
+            height = card_bottom + footer_height + margin
             image = Image.new("RGB", (width, height), palette["background"])
             draw = ImageDraw.Draw(image)
-            _draw_background(draw, width, height, palette["background_dot"])
             _draw_page(
-                draw,
-                page_lines,
-                title_lines=title_lines,
-                width=width,
-                margin=margin,
-                top_padding=top_padding,
-                card_top=card_top,
-                card_bottom=card_bottom,
-                title_font=title_font,
-                label_font=label_font,
-                regular_font=regular_font,
-                title_line_height=title_line_height,
-                body_line_height=body_line_height,
-                blank_line_height=blank_line_height,
-                separator_height=separator_height,
-                palette=palette,
+                draw, page_lines, header=header, fonts=fonts, width=width,
+                margin=margin, padding=padding, body_top=body_top,
+                card_bottom=card_bottom, header_height=header_height, palette=palette,
             )
-            if len(pages) > 1:
-                page_label = f"{page_index} / {len(pages)}"
-                draw.text(
-                    (
-                        (width - _text_width(draw, page_label, page_font)) / 2,
-                        card_bottom + 14,
-                    ),
-                    page_label,
-                    font=page_font,
-                    fill=palette["label_text"],
-                )
+            page_label = f"{page_index:02d} / {len(pages):02d}"
+            _draw_text(
+                draw, (width - _text_width(draw, page_label, page_font)) / 2,
+                card_bottom + 18, page_label, page_font, palette["muted_text"],
+            )
             page_path = _page_path(output, page_index, len(pages))
             image.save(page_path, format="PNG")
             written.append(str(page_path))
@@ -270,149 +242,179 @@ def _render_text_metadata_image_sync(
 
 def _draw_page(
     draw: Any,
-    body_lines: List[str],
+    body_lines: List[_TextLine],
     *,
-    title_lines: List[str],
+    header: List[str],
+    fonts: dict[str, object],
     width: int,
     margin: int,
-    top_padding: int,
-    card_top: int,
+    padding: int,
+    body_top: int,
     card_bottom: int,
-    title_font: object,
-    label_font: object,
-    regular_font: object,
-    title_line_height: int,
-    body_line_height: int,
-    blank_line_height: int,
-    separator_height: int,
+    header_height: int,
     palette: dict[str, str],
 ) -> None:
-    """绘制单页标题、便签卡片与正文行。"""
-    for index, line in enumerate(title_lines):
-        line_width = _text_width(draw, line, title_font)
-        draw.text(
-            ((width - line_width) / 2, top_padding + index * title_line_height),
-            line,
-            font=title_font,
-            fill=palette["title"],
-        )
-
-    card_x0 = margin
-    card_x1 = width - margin
+    """绘制有清楚阅读层级的单页卡片。"""
     draw.rounded_rectangle(
-        (card_x0 + 5, card_top + 5, card_x1 + 5, card_bottom + 5),
-        radius=16,
+        (margin, margin + 3, width - margin, card_bottom + 3),
+        radius=22,
         fill=palette["card_shadow"],
     )
     draw.rounded_rectangle(
-        (card_x0, card_top, card_x1, card_bottom),
-        radius=16,
+        (margin, margin, width - margin, card_bottom),
+        radius=22,
         fill=palette["card_fill"],
         outline=palette["card_outline"],
-        width=2,
+        width=1,
     )
-
-    tape_width = min(150, max(100, width // 6))
-    tape_x0 = (width - tape_width) // 2
-    draw.rectangle(
-        (tape_x0, card_top - 13, tape_x0 + tape_width, card_top + 12),
-        fill=palette["tape_fill"],
+    body_x = margin + padding
+    header_y = margin + padding
+    draw.rounded_rectangle(
+        (body_x, header_y + 2, body_x + 4, header_y + 20),
+        radius=2, fill=palette["accent"],
     )
-
-    body_x = card_x0 + 28
-    body_y = card_top + 24
+    for index, line in enumerate(header):
+        _draw_text(
+            draw, body_x + 18, header_y + index * header_height,
+            line, fonts["meta"], palette["muted_text"],
+        )
+    body_y = body_top
     for line in body_lines:
-        if line == TEXT_SECTION_SEPARATOR:
-            rule_y = body_y + max(8, body_line_height // 2)
+        if line.kind == "separator":
+            rule_y = body_y + line.height // 2
             draw.line(
-                (body_x, rule_y, card_x1 - 28, rule_y),
-                fill=palette["rule"],
-                width=2,
+                (body_x, rule_y, width - body_x, rule_y),
+                fill=palette["rule"], width=1,
             )
-            body_y += separator_height
-            continue
-        if not line:
-            body_y += blank_line_height
-            continue
-
-        label, value = _split_label(line)
-        if label and value:
-            draw.text(
-                (body_x, body_y),
-                label,
-                font=label_font,
-                fill=palette["label_text"],
+        elif line.kind != "blank":
+            font = fonts[line.kind]
+            color = (
+                palette["muted_text"] if line.kind == "meta" else palette["body_text"]
             )
-            label_width = _text_width(draw, label, label_font)
-            draw.text(
-                (body_x + label_width, body_y),
-                value,
-                font=regular_font,
-                fill=palette["body_text"],
-            )
-        else:
-            draw.text(
-                (body_x, body_y),
-                line,
-                font=regular_font,
-                fill=palette["body_text"],
-            )
-        body_y += body_line_height
+            if line.kind == "title":
+                color = palette["title"]
+            elif line.kind in ("section", "author"):
+                color = palette["accent"]
+            text_x = body_x
+            if line.label:
+                _draw_text(
+                    draw, text_x, body_y, line.label,
+                    fonts["label"], palette["muted_text"],
+                )
+                text_x += _text_width(draw, line.label, fonts["label"])
+            _draw_text(draw, text_x, body_y, line.text, font, color)
+        body_y += line.height
 
 
-def _draw_background(
-    draw: object,
-    width: int,
-    height: int,
-    dot_color: str,
-) -> None:
-    """绘制低对比度便签背景。"""
-    for y in range(7, height, 14):
-        for x in range(7, width, 14):
-            draw.ellipse((x - 1, y - 1, x + 1, y + 1), fill=dot_color)
+def _draw_text(draw: Any, x: float, y: float, text: str, font: object, color: str) -> None:
+    """按字形实际边界对齐，避免字体上边距或负左边距导致溢出。"""
+    left = draw.textbbox((0, 0), text, font=font, anchor="lt")[0]
+    draw.text((x - left, y), text, font=font, fill=color, anchor="lt")
 
 
-def _wrap_text_multiline(
-    draw: object,
+def _layout_text(
+    draw: Any,
     text: str,
-    font: object,
+    fonts: dict[str, object],
     max_width: int,
-) -> List[str]:
-    """按原始换行拆分并对每行进行中文安全换行。"""
-    lines: List[str] = []
-    raw_lines = (
-        str(text or "")
-        .replace("\r\n", "\n")
-        .replace("\r", "\n")
-        .split("\n")
-    )
-    for raw_line in raw_lines:
-        if raw_line == "":
-            lines.append("")
+    line_spacing: float,
+    paragraph_spacing: float,
+) -> List[_TextLine]:
+    """按标题、辅助信息、正文与评论角色测量每一行。"""
+    lines: List[_TextLine] = []
+    body_height = _line_height(draw, fonts["body"], line_spacing)
+    for raw_line in str(text).replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        value = raw_line.strip()
+        if not value:
+            if lines and lines[-1].kind not in ("blank", "separator"):
+                lines.append(_TextLine(
+                    "", "blank", round(body_height * paragraph_spacing),
+                    keep_with_next=lines[-1].keep_with_next,
+                ))
             continue
-        wrapped = _wrap_text(draw, raw_line, font, max_width)
-        lines.extend(wrapped)
-    return lines or ["（无文本内容）"]
+        if value == TEXT_SECTION_SEPARATOR:
+            if lines and lines[-1].kind == "blank":
+                lines.pop()
+            lines.append(_TextLine("", "separator", body_height, keep_with_next=True))
+            continue
+        label, content = _split_label(value)
+        kind = "body"
+        if label.rstrip("：:") == "标题":
+            kind, value, label = "title", content.strip(), ""
+        elif value in ("简介/正文：", "简介/正文:", "翻译") or re.fullmatch(
+            r"(?:热评|翻译)[（(].+?[）)][：:]?", value,
+        ):
+            kind, label = "section", ""
+            value = value.rstrip("：:")
+        elif re.match(r"^\[\d+\]\s+", value):
+            kind, label = "author", ""
+        elif label:
+            kind, value = "meta", content
+        font = fonts[kind]
+        first_width = max_width - (
+            _text_width(draw, label, fonts["label"]) if label else 0
+        )
+        wrapped = _wrap_text(draw, value, font, max_width, first_line_width=first_width)
+        factor = line_spacing if kind in ("body", "meta") else 1.5
+        height = _line_height(draw, font, factor)
+        keep_with_next = (
+            kind in ("title", "section", "author") or label.rstrip("：:") == "点赞"
+        )
+        for index, line in enumerate(wrapped):
+            bbox = draw.textbbox((0, 0), line, font=font)
+            actual_height = bbox[3] - bbox[1]
+            if index == 0 and label:
+                label_bbox = draw.textbbox((0, 0), label, font=fonts["label"])
+                actual_height = max(actual_height, label_bbox[3] - label_bbox[1])
+            lines.append(_TextLine(
+                line, kind, max(height, actual_height + 2),
+                label if index == 0 else "",
+                keep_with_next,
+            ))
+        if kind in ("title", "section"):
+            lines[-1].height += max(10, body_height // 3)
+    while lines and lines[-1].kind in ("blank", "separator"):
+        lines.pop()
+    return lines or [_TextLine("（无文本内容）", "body", body_height)]
 
 
-def _wrap_text(draw: object, text: str, font: object, max_width: int) -> List[str]:
+def _wrap_text(
+    draw: object, text: str, font: object, max_width: int,
+    *, first_line_width: int | None = None,
+) -> List[str]:
+    """按实际字形宽度换行，优先保留英文单词并避免中文标点悬挂。"""
     value = str(text or "").strip()
     if not value:
         return [""]
     lines: List[str] = []
-    current = ""
-    for char in value:
-        candidate = current + char
-        if not current or _text_width(draw, candidate, font) <= max_width:
-            current = candidate
-            continue
-        if char in NO_LINE_START_CHARS:
-            current = candidate
-            continue
-        lines.append(current.rstrip())
-        current = char.lstrip()
-    if current:
-        lines.append(current.rstrip())
+    start = 0
+    while start < len(value):
+        available = (
+            first_line_width if not lines and first_line_width is not None else max_width
+        )
+        end = start + 1
+        while end < len(value) and _text_width(draw, value[start:end + 1], font) <= available:
+            end += 1
+        if end < len(value):
+            boundary = end
+            # 能在一个单词前断行时保留单词，超长英文词或链接按字形拆分。
+            if (
+                value[end - 1].isascii() and value[end].isascii()
+                and value[end - 1].isalnum() and value[end].isalnum()
+            ):
+                space = value.rfind(" ", start, end)
+                if space > start:
+                    boundary = space + 1
+            while boundary > start + 1 and (
+                value[boundary] in NO_LINE_START_CHARS
+                or value[boundary - 1] in NO_LINE_END_CHARS
+            ):
+                boundary -= 1
+            end = boundary
+        lines.append(value[start:end].rstrip())
+        start = end
+        while start < len(value) and value[start] == " ":
+            start += 1
     return lines or [value]
 
 
@@ -423,7 +425,7 @@ def _split_label(line: str) -> tuple[str, str]:
             index = line.find(separator) + len(separator)
             label = line[:index].strip()
             value = line[index:]
-            if 0 < len(label) <= 12 and value:
+            if label.rstrip("：:") in METADATA_LABELS and value:
                 return label, value
             break
     return "", ""
@@ -445,18 +447,6 @@ def _normalize_width(value: object) -> int:
     except (TypeError, ValueError):
         parsed = DEFAULT_RENDER_WIDTH
     return max(640, min(1600, parsed))
-
-
-def _row_height(
-    line: str,
-    body_line_height: int,
-    blank_line_height: int,
-    separator_height: int,
-) -> int:
-    """返回正文行、段落空行或分隔线占用的高度。"""
-    if line == TEXT_SECTION_SEPARATOR:
-        return separator_height
-    return body_line_height if line else blank_line_height
 
 
 def _normalize_spacing(value: object, default: float, minimum: float) -> float:
@@ -544,52 +534,48 @@ def _style_palette(style: str) -> dict[str, str]:
     """返回渲染风格对应的颜色方案。"""
     palettes = {
         "fresh": {
-            "background": "#fdeef4",
-            "background_dot": "#f4c1d2",
-            "card_fill": "#f9ded8",
-            "card_outline": "#f4b7bd",
-            "card_shadow": "#efb9b6",
-            "tape_fill": "#fde6b6",
-            "title": "#ff6389",
-            "label_text": "#176c72",
-            "body_text": "#51413f",
-            "rule": "#e4aeb0",
+            "background": "#F5F0F0",
+            "card_fill": "#FFFCFC",
+            "card_outline": "#EAE0E2",
+            "card_shadow": "#EAE3E5",
+            "title": "#322D35",
+            "accent": "#A65770",
+            "muted_text": "#7B707A",
+            "body_text": "#403A43",
+            "rule": "#EDE3E7",
         },
         "tech": {
-            "background": "#07111f",
-            "background_dot": "#173a60",
-            "card_fill": "#0d1828",
-            "card_outline": "#2d9cff",
-            "card_shadow": "#050b14",
-            "tape_fill": "#38e7ff",
-            "title": "#6ee7ff",
-            "label_text": "#7cffc6",
-            "body_text": "#d7e7f7",
-            "rule": "#2b78d6",
+            "background": "#0D1420",
+            "card_fill": "#162131",
+            "card_outline": "#28384B",
+            "card_shadow": "#080F19",
+            "title": "#EDF5FC",
+            "accent": "#82C7E8",
+            "muted_text": "#A0B0C1",
+            "body_text": "#D4DEE9",
+            "rule": "#2C3C4F",
         },
         "serious": {
-            "background": "#eef1f5",
-            "background_dot": "#cfd6df",
-            "card_fill": "#ffffff",
-            "card_outline": "#a8b2bf",
-            "card_shadow": "#c8ced6",
-            "tape_fill": "#d8dee6",
-            "title": "#1f2937",
-            "label_text": "#0f4c81",
-            "body_text": "#334155",
-            "rule": "#d9e2ec",
+            "background": "#EDF0F4",
+            "card_fill": "#FFFFFF",
+            "card_outline": "#DFE4EA",
+            "card_shadow": "#DEE3EA",
+            "title": "#1E293B",
+            "accent": "#355A7E",
+            "muted_text": "#697586",
+            "body_text": "#354052",
+            "rule": "#E2E7ED",
         },
         "card": {
-            "background": "#f4f7f2",
-            "background_dot": "#dfe7e2",
-            "card_fill": "#ffffff",
-            "card_outline": "#dfe7e2",
-            "card_shadow": "#d5dae3",
-            "tape_fill": "#dbe7f5",
-            "title": "#22313d",
-            "label_text": "#356f78",
-            "body_text": "#3e4a57",
-            "rule": "#a8b2bf",
+            "background": "#F0F2ED",
+            "card_fill": "#FDFDF9",
+            "card_outline": "#E0E5DA",
+            "card_shadow": "#E0E5DB",
+            "title": "#2C3831",
+            "accent": "#53745F",
+            "muted_text": "#727C71",
+            "body_text": "#3F4A42",
+            "rule": "#E4E8DF",
         },
     }
     return palettes.get(_normalize_style(style), palettes[DEFAULT_RENDER_STYLE])

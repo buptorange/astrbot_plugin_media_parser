@@ -183,6 +183,11 @@ def build_text_node(
     """
     if not enable_text_metadata:
         error = str(metadata.get("error") or "").strip()
+        if not error and metadata.get("readme_url") and not metadata.get("has_valid_media"):
+            error = next(
+                (str(reason) for reason in metadata.get("image_skip_reasons", []) if reason),
+                "",
+            )
         if not error:
             return None
         url = str(metadata.get("url") or metadata.get("source_url") or "").strip()

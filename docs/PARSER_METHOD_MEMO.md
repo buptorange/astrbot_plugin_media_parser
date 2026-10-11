@@ -1,6 +1,6 @@
 # 平台解析备忘
 
-本文记录当前 30 个平台解析器的链接范围、取数路径、字段来源与处理边界，平台顺序与配置、解析器工厂及本地发现列表一致。内容以代码实现为准；文中的上游接口与页面结构属于平台未公开承诺的协议，历史样本验证不代表其持续可用。使用配置见 [README](../README.md)，公共数据流见 [架构说明](ARCHITECTURE.md)。
+本文记录当前 31 个平台解析器的链接范围、取数路径、字段来源与处理边界，平台顺序与配置、解析器工厂及本地发现列表一致。内容以代码实现为准；文中的上游接口与页面结构属于平台未公开承诺的协议，历史样本验证不代表其持续可用。使用配置见 [README](../README.md)，公共数据流见 [架构说明](ARCHITECTURE.md)。
 
 ## 一、通用约定
 
@@ -50,7 +50,7 @@
 - 虎扑、豆瓣、V2EX、稀土掘金、Gitee、GitLab 与 Pixiv 在点赞数未知时省略该字段，消息中显示 `-`，其余平台按接口返回值展示。缩写赞数与相对时间保留平台原文。
 - 评论失败时保留正文、媒体及已取得的评论；`asyncio.CancelledError` 继续向上传播。
 
-快手、微信、博客园、Twitter/X 与 GitHub 未接入评论。
+快手、红果短剧、微信、博客园、Twitter/X 与 GitHub 未接入评论。
 
 ### 正文配图位置
 
@@ -270,7 +270,29 @@ window.videoInfo / window.articleInfo / window.bangumiData
 
 只处理链接指定的单个播放单元或文章，不批量抓取整季或全部分 P，不支持直播、个人空间、独立音频与应用私有协议。登录、地区与内容访问限制仍可能导致解析失败。
 
-## 六、网易云音乐
+## 六、红果短剧
+
+### 入口与分集身份
+
+支持 `novelquickapp.com/s/{短码}/` 分享短链、红果 `video-animation-share` / `video-detail-share` 落地页，以及 `hongguoduanju.com/detail?series_id={系列ID}` 和 `/player/{系列ID}/{分集ID}`。逐跳校验短链目标，拒绝站外地址、异常端口及凭据。分享参数 `video_id` 是系列编号，`vid` 才是指定分集；`share_toast_vid` 可能仍指向第一集，不能用它替换 `vid`。
+
+从官网详情页的 `_ROUTER_DATA.loaderData.detail_page.seriesDetail` 读取标题、简介、封面、演员、发布时间和完整 `vid_list`，校验系列编号、分集存在性和列表重复项。详情入口默认第一集，其余入口严格解析指定集，不展开整剧。
+
+### 完整视频取流
+
+参考 [guoapp](https://github.com/drdon1234/guoapp/tree/0e60928514c31a96ade9b31866948f15da5ca2a6/native/core) 的红果协议，使用 `api5-normal-sinfonlineb.fqnovel.com/novel/player/video_model/v1/`，传入目标 `video_id` 和 `need_all_video_definition`。设备标识仅保存在解析器实例内，无需账户、Cookie 或持久化文件。请求签名对应实际编码后的查询与 JSON 字节，发送时禁止客户端重新编码查询字符串。
+
+媒体候选读取 `video_model.video_list`，解码直接或 Base64 地址；按清晰度降序排列，同画质优先 H.264，其次 HEVC / bytevc1，跳过 bytevc2。加密候选从 `encrypt_info.spade_a` 取得 CENC AES-CTR 密钥，并按完整候选地址写入 `video_decryption_keys`，不放入 URL、下载请求头或日志。裁剪地址、无可用密钥或未知加密方式不作为完整视频输出。
+
+官网播放页通常只开放前三集，分享页可能仅有 30 秒预览；二者均不作为任意分集取流的回退。App 播放接口不可用时报告失败，不替换为第一集或预览。
+
+### 下载与限制
+
+视频强制使用本地缓存；既有普通视频下载器保留字节预算和大小上限，下载后由 ffmpeg 读取本地加密文件、解密并重新封装为 MP4，成功后才交给消息流程。缺少 ffmpeg、解密失败、超时或取消时清理加密文件与临时输出，不发送加密直链。没有平台封面时，加密候选不走普通首帧截取。
+
+实测样例为《有趣赎罪之孤灯遇暖》第四集（系列 `7687536297627372569`、分集 `7687540967632571416`），完整时长约 63.855 秒，1080P HEVC 与 AAC 下载解密后通过全片解码。可解析的具体内容、清晰度仍由上游接口决定；不接入热评、搜索、整剧批量下载或第三方解析站。
+
+## 七、网易云音乐
 
 支持能力：音频 / 图片 / 文本 / 热评
 
@@ -290,7 +312,7 @@ window.videoInfo / window.articleInfo / window.bangumiData
 
 请求 `/api/v1/resource/hotcomments/R_SO_4_{id}`，按服务端顺序分页读取，最多 3 页。
 
-## 七、喜马拉雅
+## 八、喜马拉雅
 
 支持能力：音频 / 图片 / 文本 / 热评
 
@@ -308,7 +330,7 @@ window.videoInfo / window.articleInfo / window.bangumiData
 
 请求移动接口 `/m-revision/common/track/queryTrackCommentsFirstPage`，按 `trackId` 校验归属，保留首屏顺序并排除楼中楼，最多 20 条。该接口的翻页行为未经验证，因此不构造分页，也不以普通评论接口补足。
 
-## 八、微博
+## 九、微博
 
 支持能力：视频 / 图片 / 文本 / 热评
 
@@ -338,7 +360,7 @@ window.videoInfo / window.articleInfo / window.bangumiData
 
 取得微博状态 ID 后请求 `/ajax/statuses/buildComments`，复用访客 Cookie 与请求头。仅读取一次返回列表，在已取得的评论范围内按点赞数排序并截取；该排序不代表全帖评论排名。
 
-## 九、小红书
+## 十、小红书
 
 支持能力：视频 / 图片 / 文本 / 热评
 
@@ -373,7 +395,7 @@ xhslink.com / xhslink.cn / xiaohongshu.com
 
 仅使用页面状态中已下发的评论，按点赞数排序；状态中没有评论时不额外请求评论接口，以避免触发风控。
 
-## 十、闲鱼
+## 十一、闲鱼
 
 支持能力：视频 / 图片 / 文本 / 热评
 
@@ -414,7 +436,7 @@ mtop.taobao.idle.awesome.detail
 
 商品留言请求 `mtop.taobao.idle.comment.list`（版本 `5.0`），复用 MTop 匿名签名，分页参数按接口实际拼写使用 `roesPerPage`。保留接口顺序与打码昵称。公开列表通常只返回 3 条，即使总数非零或标记存在下一页，也可能无法取得更多留言。
 
-## 十一、今日头条
+## 十二、今日头条
 
 支持能力：视频 / 图片 / 文本 / 热评
 
@@ -466,7 +488,7 @@ Result.Data.PlayInfoList
 
 请求移动前端使用的 `https://api.toutiaoapi.com/article/v4/tab_comments/`。`group_id` 优先取页面 `sessionConfig.groupId`，其次取 `articleInfo.gid` 等字段；校验响应资源身份后分页读取，每页 20 条、最多 5 页，保留平台排序。文章、视频与微头条共用该链路。
 
-## 十二、小黑盒
+## 十三、小黑盒
 
 支持能力：视频 / 图片 / 文本 / 热评
 
@@ -528,7 +550,7 @@ game_introduction?steam_appid=...
 
 两条链路复用现有签名与请求代理。主机与手游评价尚未接入。
 
-## 十三、雪球
+## 十四、雪球
 
 支持能力：视频 / 图片 / 文本 / 热评
 
@@ -582,7 +604,7 @@ api.xueqiu.com/statuses/show.json?id={status_id}
 
 复用匿名访客令牌与失效重试逻辑，先请求 `api.xueqiu.com/statuses/comments_excellent.json` 获取精选评论，再以 `comments.json` 的普通评论补足。响应中的评论总数不等于实际取得的数量。
 
-## 十四、微信
+## 十五、微信
 
 支持能力：视频 / 图片 / 文本
 
@@ -650,7 +672,7 @@ data.feedInfo + data.authorInfo
 
 两个分支均使用现有 aiohttp 会话与解析并发限制，单次请求超时 30 秒。视频号视频与公众号图片均依赖可用缓存目录。当前不支持视频号图集、直播与公众号内嵌视频。
 
-## 十五、知乎
+## 十六、知乎
 
 支持能力：图片 / 文本 / 热评
 
@@ -674,7 +696,7 @@ data.feedInfo + data.authorInfo
 
 回答与专栏评论分别请求 `/api/v4/comment_v5/answers/{id}/root_comment` 与 `/api/v4/comment_v5/articles/{id}/root_comment`，参数为 `order=score`，复用匿名 `d_c0` 与 `x-zse-96` 签名。翻页时按响应给出的下一页游标重新签名，并限定在当前资源路径内。
 
-## 十六、百度贴吧
+## 十七、百度贴吧
 
 支持能力：视频 / 图片 / 文本 / 热评
 
@@ -703,7 +725,7 @@ data.feedInfo + data.authorInfo
 
 正文范围限于首楼与直接转发的原帖，不抓取全部回帖或楼中楼。网页可能返回 403 或验证页面，这些页面不作为正文；删除、不可见或获取失败的帖子返回明确错误。链接形态参考 [TiebaLite](https://github.com/HuanCheng65/TiebaLite)，富文本字段参考 [open-tbm](https://github.com/n0099/open-tbm)，混排与转发样例参考 [aiotieba](https://github.com/lumina37/aiotieba)，最终以实际响应为准。
 
-## 十七、NGA
+## 十八、NGA
 
 支持能力：图片 / 文本 / 热评
 
@@ -729,7 +751,7 @@ NGA 通过 `image_tls_ciphers` 指定 `ECDHE+AESGCM:ECDHE+CHACHA20`，以应对�
 
 优先使用帖子接口返回的 `hot_post`，保留平台热门顺序；存在可用热门回复时不以普通回复补足。没有可用热门回复时，按 `result` 中的楼层顺序读取普通回复：复用正文请求的第一页，必要时通过同一接口的 `page` 表单参数翻页，包含第一页在内最多 20 页。回复按 `pid` 去重，校验帖子身份与返回页码，首帖不计入评论；保留作者、发布时间与 `vote_good` 赞数。
 
-## 十八、虎扑
+## 十九、虎扑
 
 支持能力：视频 / 图片 / 文本 / 热评
 
@@ -745,7 +767,7 @@ NGA 通过 `image_tls_ciphers` 指定 `ECDHE+AESGCM:ECDHE+CHACHA20`，以应对�
 
 优先读取亮评 `detail.lights`，不足时以当前首屏的普通回复补足，不翻页。两类回复均保留作者、时间与可获得的赞数。
 
-## 十九、豆瓣
+## 二十、豆瓣
 
 支持能力：视频 / 图片 / 文本 / 热评
 
@@ -771,7 +793,7 @@ NGA 通过 `image_tls_ciphers` 指定 `ECDHE+AESGCM:ECDHE+CHACHA20`，以应对�
 - 豆瓣阅读评论使用从当前页面脚本中发现的只读查询标识与匿名 CSRF 令牌，不固定历史查询哈希；作品短评、章节讨论与阅读评论回复分别核对归属。
 - 纯图片评论保留文字与链接。预告片不借用作品短评作为自身评论。
 
-## 二十、V2EX
+## 二十一、V2EX
 
 支持能力：图片 / 文本 / 热评
 
@@ -785,7 +807,7 @@ NGA 通过 `image_tls_ciphers` 指定 `ECDHE+AESGCM:ECDHE+CHACHA20`，以应对�
 
 感谢数写入 `hot_comments.likes`。该排序仅限已读取的范围，不代表官方热评或全帖热度。
 
-## 二十一、稀土掘金
+## 二十二、稀土掘金
 
 支持能力：图片 / 文本 / 热评
 
@@ -797,7 +819,7 @@ NGA 通过 `image_tls_ciphers` 指定 `ECDHE+AESGCM:ECDHE+CHACHA20`，以应对�
 
 请求 `/interact_api/v1/comment/list`（`sort=1`，热门排序），最多 3 页；一级评论不足时，使用内嵌回复及最多 3 次 `/interact_api/v1/reply/list` 请求补齐。按文章与父评论身份校验并去重。
 
-## 二十二、CSDN
+## 二十三、CSDN
 
 支持能力：图片 / 文本 / 热评
 
@@ -811,7 +833,7 @@ NGA 通过 `image_tls_ciphers` 指定 `ECDHE+AESGCM:ECDHE+CHACHA20`，以应对�
 
 请求 `POST /phoenix/web/v1/comment/list/{文章ID}?page={页}&size=10&fold=unfold`，最多 5 页，按平台默认顺序读取一级评论及其附带回复，核对文章身份后去重。
 
-## 二十三、博客园
+## 二十四、博客园
 
 支持能力：图片 / 文本
 
@@ -819,19 +841,19 @@ NGA 通过 `image_tls_ciphers` 指定 `ECDHE+AESGCM:ECDHE+CHACHA20`，以应对�
 
 匿名评论接口实测要求登录，返回的评论数也不能证明评论可读，因此未注册评论开关、不发起评论请求。新闻子站、登录内容与搜索摘要不接入。
 
-## 二十四、Gitee
+## 二十五、Gitee
 
-支持能力：文本 / 热评
+支持能力：文本 / 图片 / 热评
 
 ### 仓库概况
 
-通过官方匿名接口 `GET https://gitee.com/api/v5/repos/{owner}/{repo}` 读取公开仓库概况，展示简介、主要语言、Star / Fork 数、许可证与更新时间，不读取 README 或仓库代码。仓库迁移后，接口可能在 HTTP 200 中直接返回新仓库身份，以一致的 `full_name`、`namespace` 与规范地址为准；组织仓库的 `owner.login` 可能是管理员个人账号，不用于表示所有者。
+通过官方匿名接口 `GET https://gitee.com/api/v5/repos/{owner}/{repo}` 读取公开仓库概况，展示简介、主要语言、Star / Fork 数、许可证与更新时间。仓库根结果附带 `readme_url` 和平台正文选择器，富媒体下载阶段通过 Chromium 截取 README 区域，不下载代码文件。仓库迁移后，接口可能在 HTTP 200 中直接返回新仓库身份，以一致的 `full_name`、`namespace` 与规范地址为准；组织仓库的 `owner.login` 可能是管理员个人账号，不用于表示所有者。
 
 ### Issue 与评论
 
 Issue 使用 `/repos/{owner}/{repo}/issues/{编号}` 及其 `/comments` 接口，编号为区分大小写的字母数字组合。核验议题归属后读取有限数量的普通评论，保留正文、作者、时间与回复关系。仓库概况不附加评论。
 
-## 二十五、TikTok
+## 二十六、TikTok
 
 支持能力：视频 / 图片 / 文本 / 热评
 
@@ -866,7 +888,7 @@ tiktok.com / vm.tiktok.com / vt.tiktok.com
 
 请求 `/api/comment/list/`，使用作品 ID 与游标并沿用解析代理，按平台默认顺序展示。
 
-## 二十六、YouTube
+## 二十七、YouTube
 
 支持能力：视频 / 文本 / 热评
 
@@ -903,7 +925,7 @@ watch / shorts / youtu.be / embed / nocookie embed / v / attribution_link
 
 复用观看页 `ytInitialData` 中的热门或默认评论入口，以及 `ytcfg` 中的 WEB 客户端上下文，请求 `/youtubei/v1/next`。按根列表中的 `commentViewModel` 关联 `commentEntityPayload`，不跟进子回复游标。
 
-## 二十七、Steam
+## 二十八、Steam
 
 支持能力：视频 / 图片 / 文本 / 热评
 
@@ -968,7 +990,7 @@ steamcommunity.com/sharedfiles/filedetails/?id={id}&l=schinese
 
 指南与创意工坊物品不额外请求评论接口，只读取详情页已下发的首屏公开评论（按时间倒序，通常最多 10 条），不含点赞数。
 
-## 二十八、Twitter/X
+## 二十九、Twitter/X
 
 支持能力：视频 / 图片 / 文本
 
@@ -1009,7 +1031,7 @@ GraphQL 响应嵌套较深且路径不固定，解析器递归查找带有 tweet
 
 没有图片和视频但有正文的推文同样视为解析成功。
 
-## 二十九、Pixiv
+## 三十、Pixiv
 
 支持能力：图片 / 文本 / 热评
 
@@ -1054,29 +1076,29 @@ image_urls = [
 
 请求 `/ajax/illusts/comments/roots`，按 `offset` 分页，保留时间倒序，复用 Cookie 与代理；纯贴纸评论转换为 `[贴纸]`。
 
-## 三十、GitHub
+## 三十一、GitHub
 
-支持能力：文本
+支持能力：文本 / 图片
 
 仅解析 `github.com/{owner}/{repo}` 公开仓库首页，接受 `.git` 后缀、尾斜杠、查询参数与锚点，仓库身份由所有者与仓库名确定。Issue、Pull Request、Release 与代码文件等子页不按仓库首页解析。
 
-请求官方匿名接口 `GET https://api.github.com/repos/{owner}/{repo}`，提取仓库名、所有者、简介 `description`、主要语言、Star / Fork 数、许可证、归档状态与更新时间，写入 `MediaMetadata` 文本字段并保留仓库链接。不读取 README，不调用大模型生成摘要，也不请求图片、视频、评论或代码。
+请求官方匿名接口 `GET https://api.github.com/repos/{owner}/{repo}`，提取仓库名、所有者、简介 `description`、主要语言、Star / Fork 数、许可证、归档状态与更新时间，写入 `MediaMetadata` 文本字段并保留仓库链接。另提供规范仓库地址 `readme_url` 与平台自己的 `readme_selector`，供富媒体阶段直接截取原网页 README 正文，不调用大模型生成摘要，不解析代码或评论。
 
-输出模式可选 `全部发送` 或 `仅文本`，`仅富媒体` 没有可发送内容。`proxy.github` 默认关闭，仅控制仓库 API 请求，开启后使用 `proxy.address`；解析结果不附加媒体下载代理字段。不配置 Cookie 或 Token，匿名接口受 GitHub 频率限制；限流、私有或不存在的仓库返回明确错误，不改为网页抓取或重复请求。
+`全部发送` 输出仓库概况与 README 截图，`仅文本` 跳过浏览器，`仅富媒体` 只发送 README 截图。`proxy.github` 默认关闭，开启后仓库 API 和截图浏览器均使用 `proxy.address`，通过现有 `proxy_url` 字段传递。没有 README 或截图失败时记录媒体跳过原因，保留概况；仅富媒体模式也会显示失败原因。不配置 Cookie 或 Token，匿名接口受 GitHub 频率限制；限流、私有或不存在的仓库返回明确错误，不用截图绕过接口失败。
 
-## 三十一、GitLab
+## 三十二、GitLab
 
-支持能力：文本 / 热评
+支持能力：文本 / 图片 / 热评
 
 ### 仓库概况
 
-仅接入 `gitlab.com`，项目路径支持多级子组。匿名请求 `GET /api/v4/projects/{URL 编码的完整路径}?license=true` 获取概况，再以项目数字 ID 获取语言统计；语言统计失败时保留其余信息。响应缺少归档状态时不推断为未归档。项目迁移仅接受经过主机、接口与项目身份校验的有限次跳转（最多 2 次）。
+仅接入 `gitlab.com`，项目路径支持多级子组。匿名请求 `GET /api/v4/projects/{URL 编码的完整路径}?license=true` 获取概况，再以项目数字 ID 获取语言统计；语言统计失败时保留其余信息。仓库根结果附带规范地址与 README 正文选择器，富媒体阶段用 Chromium 截图；Issue 不请求 README。响应缺少归档状态时不推断为未归档。项目迁移仅接受经过主机、接口与项目身份校验的有限次跳转（最多 2 次）。
 
 ### Issue 与讨论
 
 Issue 接入 `/-/issues/{编号}` 以及 Issue 类型的 `/-/work_items/{编号}`，读取 `/api/v4/projects/{项目ID}/issues/{编号}`，核对项目 ID、议题 ID、公开状态与工作项类型。讨论通过匿名 `/api/graphql` 查询，按项目与议题的全局 ID 校验，最多读取 3 页讨论，每个讨论最多 20 条记录，排除系统事件并去重；保留普通顺序，不推断热门或点赞数。仓库概况不附加评论。
 
-## 三十二、维护检查项
+## 三十三、维护检查项
 
 修改平台解析逻辑前，逐项确认：
 

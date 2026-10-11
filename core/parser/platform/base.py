@@ -72,6 +72,7 @@ class BaseVideoParser(ABC):
             - image_headers: dict，图片下载的完整请求头字典（可选，缺省时补为空字典）
             - image_tls_ciphers: str，平台图片请求的 TLS 加密套件列表（可选，缺省时沿用会话配置并保持证书校验）
             - video_headers: dict，视频下载的完整请求头字典（可选，缺省时补为空字典）
+            - video_decryption_keys: Dict[str, str]，完整 HTTP 视频候选 URL 到 CENC 的 32 位十六进制密钥映射；对应视频必须在本地解密后发送，密钥不得写入 URL 或日志（可选）
             - video_force_download: bool，是否强制下载到缓存目录（可选，默认False）。True=缓存目录不可用或下载失败时跳过该视频；False=由下载决策引擎按目录能力选择 local/direct
             - platform: 内容来源平台名（可选）
 

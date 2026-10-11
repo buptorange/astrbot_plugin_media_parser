@@ -1,3 +1,5 @@
+"""插件入口，负责链接解析调度、媒体处理与消息输出。"""
+
 import asyncio
 import copy
 import tempfile
@@ -81,6 +83,7 @@ class VideoParserPlugin(Star):
             cache_dir_available=cfg.download.cache_dir_available,
             max_concurrent_downloads=cfg.download.max_concurrent_downloads,
             video_cover_only=cfg.message.media_display.video_cover_only,
+            readme_paginate=cfg.message.text_metadata.render_paginate,
         )
 
         self.message_sender = MessageSender()
@@ -612,7 +615,10 @@ class VideoParserPlugin(Star):
 
         text_enabled = bool(metadata.get("_enable_text_metadata", True))
         rich_enabled = bool(metadata.get("_enable_rich_media", True))
-        has_media = any(metadata.get(key) for key in ("video_urls", "image_urls", "audio_urls"))
+        has_media = any(
+            metadata.get(key)
+            for key in ("video_urls", "image_urls", "audio_urls", "readme_url")
+        )
         has_text = (
             self._has_text_metadata(metadata)
             or bool(metadata.get("access_message"))

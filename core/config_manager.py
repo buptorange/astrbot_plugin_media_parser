@@ -14,6 +14,7 @@ from .parser.platform import (
     DouyinParser,
     KuaishouParser,
     AcfunParser,
+    HongguoParser,
     NeteaseParser,
     XimalayaParser,
     WeiboParser,
@@ -63,6 +64,7 @@ PARSER_OUTPUT_KEYS = (
     "douyin",
     "kuaishou",
     "acfun",
+    "hongguo",
     "netease",
     "ximalaya",
     "weibo",
@@ -658,6 +660,7 @@ class ConfigManager:
         self._enable_douyin = self._parser_enabled("douyin")
         self._enable_kuaishou = self._parser_enabled("kuaishou")
         self._enable_acfun = self._parser_enabled("acfun")
+        self._enable_hongguo = self._parser_enabled("hongguo")
         self._enable_netease = self._parser_enabled("netease")
         self._enable_ximalaya = self._parser_enabled("ximalaya")
         self._enable_weibo = self._parser_enabled("weibo")
@@ -1405,6 +1408,8 @@ class ConfigManager:
             parsers.append(
                 AcfunParser(hot_comment_count=hot_comment_counts["acfun"])
             )
+        if self._enable_hongguo:
+            parsers.append(HongguoParser())
         if self._enable_netease:
             parsers.append(
                 NeteaseParser(hot_comment_count=hot_comment_counts["netease"])

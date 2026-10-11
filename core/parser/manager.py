@@ -1,7 +1,9 @@
 """解析管理器，维护解析器列表并按链接匹配。"""
 
 import asyncio
+import re
 from typing import List, Dict, Any, Optional, Tuple
+from urllib.parse import urlsplit
 
 import aiohttp
 
@@ -21,6 +23,8 @@ _PARSER_STRING_FIELDS = frozenset(
         "desc",
         "image_tls_ciphers",
         "platform",
+        "readme_selector",
+        "readme_url",
         "restriction_label",
         "restriction_type",
         "timestamp",
@@ -52,6 +56,7 @@ _PARSER_SPECIAL_FIELDS = frozenset(
         "proxy_url",
         "url",
         "video_cover_urls",
+        "video_decryption_keys",
         "video_headers",
         "video_urls",
     }
@@ -207,12 +212,50 @@ class ParserManager:
 
         platform = self._resolve_platform_name(parser, metadata)
         metadata["url"] = canonical_url.strip()
+        if "readme_url" in metadata or "readme_selector" in metadata:
+            readme_url = metadata.get("readme_url", "")
+            selector = metadata.get("readme_selector", "")
+            parsed_readme = urlsplit(readme_url)
+            if (
+                not readme_url
+                or readme_url != metadata["url"]
+                or parsed_readme.scheme != "https"
+                or not parsed_readme.hostname
+                or parsed_readme.username is not None
+                or parsed_readme.password is not None
+            ):
+                raise ValueError("readme_url 必须是当前仓库的规范 HTTPS 地址")
+            if not selector.strip() or len(selector) > 1000:
+                raise ValueError("readme_selector 必须是有效的 README 正文选择器")
+            metadata["readme_selector"] = selector.strip()
         metadata["source_url"] = url
         metadata["platform"] = platform
         metadata["parser_name"] = parser.name
         metadata["video_urls"] = self._validate_url_groups(
             "video_urls", metadata.get("video_urls", [])
         )
+        if "video_decryption_keys" in metadata:
+            keys = metadata["video_decryption_keys"]
+            if not isinstance(keys, dict):
+                raise TypeError("video_decryption_keys 必须是 Dict[str, str]")
+            video_candidates = {
+                candidate for group in metadata["video_urls"] for candidate in group
+            }
+            for candidate, key in keys.items():
+                if (
+                    not isinstance(candidate, str)
+                    or candidate not in video_candidates
+                ):
+                    raise ValueError("video_decryption_keys 只能引用已有视频候选")
+                parsed = urlsplit(candidate)
+                if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                    raise ValueError("加密视频候选必须是完整 HTTP 链接")
+                if (
+                    not isinstance(key, str)
+                    or not re.fullmatch(r"[0-9a-fA-F]{32}", key)
+                ):
+                    raise ValueError("视频解密密钥必须是 32 位十六进制字符串")
+            metadata["video_decryption_keys"] = dict(keys)
         metadata["image_urls"] = self._validate_url_groups(
             "image_urls", metadata.get("image_urls", [])
         )
