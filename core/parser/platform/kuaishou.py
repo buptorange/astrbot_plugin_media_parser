@@ -66,16 +66,17 @@ class KuaishouParser(BaseVideoParser):
         """
         result_links_set = set()
 
-        short_pattern = r"https?://v\.kuaishou\.com/[^\s]+"
+        url_tail = r'[^\s<>"\'()\[\]，。！？；：）】》」]+'
+        short_pattern = rf"https?://v\.kuaishou\.com/{url_tail}"
         result_links_set.update(re.findall(short_pattern, text))
 
-        long_pattern = r"https?://(?:www\.)?kuaishou\.com/[^\s]+"
+        long_pattern = rf"https?://(?:www\.)?kuaishou\.com/{url_tail}"
         result_links_set.update(re.findall(long_pattern, text))
 
-        gifshow_pattern = r"https?://[a-zA-Z0-9.-]*\.?gifshow\.com/[^\s]+"
+        gifshow_pattern = rf"https?://[a-zA-Z0-9.-]*\.?gifshow\.com/{url_tail}"
         result_links_set.update(re.findall(gifshow_pattern, text))
 
-        chenzhongtech_pattern = r"https?://[a-zA-Z0-9.-]*\.?chenzhongtech\.com/[^\s]+"
+        chenzhongtech_pattern = rf"https?://[a-zA-Z0-9.-]*\.?chenzhongtech\.com/{url_tail}"
         result_links_set.update(re.findall(chenzhongtech_pattern, text))
 
         result = [url for url in result_links_set if self._is_trusted_url(url)]

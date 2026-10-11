@@ -235,9 +235,10 @@ class BilibiliAdminCookieAssistManager(AdminAssistManager):
 
     @staticmethod
     def _create_local_qr_code(login_url: str) -> str:
-        """Render a login QR code locally without disclosing its token."""
+        """在本地绘制登录二维码，避免向第三方泄露登录令牌。"""
         fd, qr_path = tempfile.mkstemp(prefix="astrbot_bilibili_qr_", suffix=".png")
         os.close(fd)
+        completed = False
         try:
             qr = qrcode.QRCode(
                 version=None,
@@ -248,19 +249,50 @@ class BilibiliAdminCookieAssistManager(AdminAssistManager):
             qr.add_data(login_url)
             qr.make(fit=True)
             qr.make_image(fill_color="black", back_color="white").save(qr_path)
+            completed = True
             return qr_path
-        except Exception:
-            try:
-                os.remove(qr_path)
-            except OSError:
-                pass
-            raise
+        finally:
+            if not completed:
+                try:
+                    os.remove(qr_path)
+                except OSError:
+                    pass
 
     async def _send_local_login_qr(
         self, event: AstrMessageEvent, login_url: str
     ) -> None:
-        """Send a locally rendered QR image and always remove its temp file."""
-        qr_path = await asyncio.to_thread(self._create_local_qr_code, login_url)
+        """发送本地二维码，并在发送结束或取消后清理临时文件。"""
+        task = asyncio.create_task(asyncio.to_thread(self._create_local_qr_code, login_url))
+        qr_path = None
+        try:
+            try:
+                qr_path = await asyncio.shield(task)
+            except asyncio.CancelledError:
+                # 取消不能终止二维码线程，必须取得最终路径后再清理。
+                completion = asyncio.gather(task, return_exceptions=True)
+                while not completion.done():
+                    try:
+                        await asyncio.shield(completion)
+                    except asyncio.CancelledError:
+                        continue
+                result = completion.result()[0]
+                if isinstance(result, str):
+                    qr_path = result
+                raise
+            await self._send_login_qr_image(event, login_url, qr_path)
+        finally:
+            if qr_path is not None:
+                try:
+                    os.remove(qr_path)
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    logger.warning(f"[bilibili] 清理临时登录二维码失败: {exc}")
+
+    async def _send_login_qr_image(
+        self, event: AstrMessageEvent, login_url: str, qr_path: str,
+    ) -> None:
+        """发送已生成的二维码，图片发送失败时回退登录链接。"""
         try:
             chain = [
                 Plain(
@@ -285,13 +317,6 @@ class BilibiliAdminCookieAssistManager(AdminAssistManager):
                 )
             except Exception as fallback_error:
                 raise fallback_error from image_error
-        finally:
-            try:
-                os.remove(qr_path)
-            except FileNotFoundError:
-                pass
-            except OSError as exc:
-                logger.warning(f"[bilibili] 清理临时登录二维码失败: {exc}")
 
     async def _poll_login_and_notify(
         self, auth_runtime: Any, qrcode_key: str, unified_msg_origin: str

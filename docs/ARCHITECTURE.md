@@ -13,7 +13,7 @@
 - B站：支持 视频 / 图片 / 文本 / 热评；覆盖普通视频、番剧、动态 / opus，支持 Cookie 增强和扫码登录运行时。
 - 抖音：支持 视频 / 图片 / 音频 / 文本 / 热评；覆盖短链、视频、图集和 slides 多分段分享页，纯图集单独输出背景音乐，含动图时背景音乐合入动图。
 - 快手：支持 视频 / 图片 / 文本；覆盖短链和作品分享页。
-- AcFun：支持 视频 / 图片 / 文本 / 热评；覆盖视频、动态和番剧页面，从服务端页面状态提取 HLS 与图片候选。
+- AcFun：支持 视频 / 图片 / 文本 / 热评；覆盖视频（含多 P）、番剧、文章和动态，从页面状态与内容接口提取媒体候选。
 - 红果短剧：支持 视频 / 文本；从官网详情校验分享指定集，以匿名 App 接口取得完整媒体并在下载后解密。
 - 网易云音乐：支持 音频 / 图片 / 文本 / 热评；匿名解析单曲，按当前播放权限获取音频，热评独立限量读取。
 - 喜马拉雅：支持 音频 / 图片 / 文本 / 热评；匿名解析单集公开音频与图文信息，读取最多 20 条首屏高赞主评论。
@@ -78,7 +78,7 @@ astrbot_plugin_media_parser/
     │       │   ├── sign.py          # 抖音 a_bogus 签名
     │       │   └── web.py           # 抖音 Web 详情接口与会话管理
     │       ├── kuaishou.py          # 快手视频/图集解析器
-    │       ├── acfun.py             # AcFun 视频/动态/番剧解析器
+    │       ├── acfun.py             # AcFun 视频/番剧/文章/动态解析器
     │       ├── hongguo/             # 红果短剧子包
     │       │   ├── parser.py        # 分享路由、分集校验与媒体选择
     │       │   ├── sign.py          # 请求签名与媒体密钥读取
@@ -197,7 +197,11 @@ V2EX 的 `likes` 表示感谢数。匿名回复接口按楼层返回，分页参
 
 `message.text_metadata.show_title/show_author/show_timestamp/show_original_link/show_description` 分别控制来源元数据字段。开关默认均为 `true`，只改变展示与翻译输入；访问状态、媒体大小、跳过原因和错误提示不受影响。
 
-`message.text_metadata.render_to_image` 开启后，主流程会在节点构建和翻译完成后收集文本节点，使用 `text_renderer.py` 在缓存目录的 `rendered_text/` 下生成 PNG，再移除已成功渲染的 Plain 节点并发送图片。正文穿插的链接（`preserve_order`）把连续的 Plain 节点在原位置分段渲染并替换为图片，任一段失败时整条链接保留原文本；`message.text_metadata.render_separate_sections` 开启时，每条链接的基础文本与热评按节点构建时记录的 `LinkBuildMeta.section_starts` 分区，连同各条翻译分别在原位置渲染，不再生成合并图片。其余情况下，非穿插链接与翻译仍合并渲染，由发送阶段前置发送。可选样式为 `清新便签`、`科技感`、`专业严肃`、`温和卡片`（内部分别归一为 `fresh`/`tech`/`serious`/`card`），字体大小限制为 16–42；`render_line_spacing` 为行高相对文字高度的倍数（1.0–3.0，默认 1.55），`render_paragraph_spacing` 为段落空行相对行高的倍数（0–3.0，默认 1.0）。`message.text_metadata.render_paginate` 开启时，渲染器按正文行拆分高度超过 1800 像素的图片，页首不保留空行和分隔线，多页时在底部标注页码并以 `_pNN` 后缀命名；关闭时保持单张输出。图片采用简洁阅读卡片，区分文章标题、辅助信息、正文、热评与翻译；测量和绘制共用字号与字重，英文单词和中文标点按实际宽度换行，标题及评论信息尽量与后续正文同页。`font_manager.py` 在插件加载和实际渲染前幂等检查默认 Noto Sans CJK，缺失或大小、SHA256 校验失败时从固定版本的字体仓库 Release 流式下载，`proxy.font` 开启且代理地址非空时经代理下载，经临时文件校验后原子落盘到 AstrBot 数据目录下的 `plugin_data/astrbot_plugin_media_parser/font`（AstrBot 更新插件会替换插件目录，字体不随插件目录保存；非 AstrBot 运行时回退插件内 `resource/font/`）；也可通过 `ASTRBOT_MEDIA_PARSER_FONT` 指定优先字体，再按配置的字体族和系统字体路径回退。字体补全、渲染或 Pillow 不可用时保留原文本节点，不影响富媒体发送。渲染图片记入 `build_result.temp_files` 统一清理；启用文件 Token 中转时逐页注册 Token，并纳入同一 TTL 清理流程。
+`message.text_metadata.render_to_image` 开启后，主流程会在节点构建和翻译完成后收集文本节点，使用 `text_renderer.py` 在缓存目录的 `rendered_text/` 下生成 PNG，再移除已成功渲染的 Plain 节点并发送图片。正文穿插的链接（`preserve_order`）把连续的 Plain 节点在原位置分段渲染并替换为图片，任一段失败时整条链接保留原文本；`message.text_metadata.render_separate_sections` 开启时，每条链接的基础文本与热评按节点构建时记录的 `LinkBuildMeta.section_starts` 分区，连同各条翻译分别在原位置渲染，不再生成合并图片。其余情况下，非穿插链接与翻译仍合并渲染，由发送阶段前置发送。可选样式为 `清新便签`、`科技感`、`专业严肃`、`温和卡片`（内部分别归一为 `fresh`/`tech`/`serious`/`card`），字体大小限制为 16–42；`render_line_spacing` 为行高相对文字高度的倍数（1.0–3.0，默认 1.55），`render_paragraph_spacing` 为段落空行相对行高的倍数（0–3.0，默认 1.0）。`message.text_metadata.render_paginate` 开启时，渲染器按正文行拆分高度超过 1800 像素的图片，页首不保留空行和分隔线，多页时在底部标注页码并以 `_pNN` 后缀命名；关闭时保持单张输出。图片采用简洁阅读卡片，区分文章标题、辅助信息、正文、热评与翻译；测量和绘制共用字号与字重，英文单词和中文标点按实际宽度换行，标题及评论信息尽量与后续正文同页。
+
+创建成品画布前限制单页高度为 16384 像素、单页为 1600 万像素、单次渲染为 20 页及 3200 万像素总量；分页时每页仍不得超过 1800 像素。超出任一预算时抛出可回退异常，保留完整原文本，不分配大画布。渲染超时或取消时观察不可强制停止的线程真实结束，再清理本次输出；重复取消不能跳过清理。B站登录二维码生成也先等待线程结束再删除临时文件。
+
+`ensure_render_fonts()` 仅在启用文本图片时于加载阶段准备字体，实际渲染前再次确认。优先以真实加载检查有效的自定义、配置字体族和本地字体，缺少粗体时沿用所选字体族的常规字体；本地可用时不要求默认资源下载。全部本地候选不可用时由 `font_manager.py` 从固定版本 Release 补全默认 Noto Sans CJK，校验大小和 SHA256 后原子落盘。`proxy.font` 开启且代理地址非空时经代理下载。字体保存在 AstrBot 数据目录下的 `plugin_data/astrbot_plugin_media_parser/font`，非 AstrBot 运行时回退插件内 `resource/font/`；可用 `ASTRBOT_MEDIA_PARSER_FONT` 指定优先字体。字体补全、渲染或 Pillow 不可用时保留原文本节点，不影响富媒体发送。渲染图片记入 `build_result.temp_files` 统一清理；启用文件 Token 中转时逐页注册 Token，并纳入同一 TTL 清理流程。
 
 `message.media_display.interleave_images` 开启后，`node_builder.py` 对提供 `content_blocks` 的链接按正文块顺序输出文字节点与已构建的配图节点：基础文本节点保留“简介/正文：”标题但不再写入正文，正文块之后依次为热评和未穿插的剩余媒体。需要同时满足文本元数据与富媒体输出开启、简介/正文可见且无解析错误，并至少有一张配图节点构建成功，否则回退原有布局。穿插链接在 `LinkBuildMeta.preserve_order` 中标记，发送阶段不再按纯图集把文字与图片分组。
 
@@ -269,9 +273,9 @@ cache/runtime_manager/bilibili/cookie.json
 `LinkRouter` 负责：
 
 - 只负责文本提链，不再使用用户可伪造的文本哨兵；`main.py` 在事件层通过发送者 ID 跳过机器人自身消息。
-- 遍历启用的解析器调用 `extract_links()`。
+- 遍历启用的解析器调用 `extract_links_with_positions()`；基类默认使用 `extract_links()` 并定位原文，B站在提链规范化时直接保留来源位置。
 - 过滤 hostname 标签含 `live` 的直播链接，也会识别 query 参数内嵌的直播跳转。
-- 原文可定位链接按出现位置排序；解析器规范化后无法定位的链接按提取顺序排在其后，再按 URL 去重。
+- 按解析器保留的原文位置排序，避免 B站裸编号、移动链接与分 P 参数规范化后改变顺序；无法定位的链接按提取顺序排在其后，再按 URL 去重。
 
 `ParserManager` 负责：
 
@@ -280,7 +284,7 @@ cache/runtime_manager/bilibili/cookie.json
 - 将解析异常、无效结果类型、空字典和不符合契约的字段隔离为带 `error` 的 metadata；`None` 与 `SkipParse` 只跳过该链接。
 - 归一 `platform`、`parser_name`、`source_url`、三类媒体 URL 和 headers，并拒绝未知字段及解析器提前写入的下游字段。
 
-`BaseVideoParser` 定义 `can_parse()`、`extract_links()`、`parse()` 接口，并提供 `_add_range_prefix_to_video_urls()`，可给普通视频候选 URL 或 DASH 子流增加 `range:` 前缀。
+`BaseVideoParser` 定义 `can_parse()`、`extract_links()`、`parse()` 接口，提供带原文位置的提链入口 `extract_links_with_positions()`，以及 `_add_range_prefix_to_video_urls()`，可给普通视频候选 URL 或 DASH 子流增加 `range:` 前缀。
 
 `core/parser/platform/` 的模块归属规则：
 
@@ -378,7 +382,7 @@ video_count + image_count ..                  音频
 - `image`：进入图片处理器；非 jpg/jpeg/png 会尝试 ffmpeg 转 PNG，GIF 等动图通过 `-frames:v 1` 只保留首帧，缺少 ffmpeg 时保留原格式并写入警告。
 - 其他：普通视频流式下载。
 
-`validator.py` 负责 HEAD/Range GET 预检、大小提取、Content-Type 检查、HTML/JSON/文本错误响应识别和 403 状态传递。`budget.py` 为普通视频、图片、DASH、HLS 和封面截取提供流式硬字节预算，独立音频下载器自行执行音频预算。媒体下载和转换先写临时文件，再原子替换成品；取消或失败会清理未完成文件。HLS 会选择最高分辨率/带宽变体并限制清单、初始化片和分片总量；`EXT-X-BYTERANGE` 当前明确拒绝。
+`validator.py` 负责 HEAD/Range GET 预检、大小提取、Content-Type 检查、HTML/JSON/文本错误响应识别和 403 状态传递。`budget.py` 为普通视频、图片、DASH、HLS 和封面截取提供流式硬字节预算，独立音频下载器自行执行音频预算。媒体下载和转换先写临时文件，再原子替换成品；取消或失败会清理未完成文件。媒体探测累计读取足够前缀或到 EOF，已读字节继续写入成品；正文断连保留原始异常类型，由外层按有限次数重试，磁盘错误不作为网络重试。HLS 会选择最高分辨率/带宽变体并限制清单、初始化片和分片总量；每份清单中的相对 URI 都以其最终响应地址解析，`EXT-X-BYTERANGE` 当前明确拒绝。图片识别、改名和转换期间取消时清理所有未交付文件。
 
 ### 2.6 存储与清理 `core/storage/`
 
@@ -810,3 +814,11 @@ metadata.proxy_url > ConfigManager.proxy.address
 - 大小限制：普通视频优先下载前预检；无声明大小的普通流、Range、DASH 与 M3U8 在下载预算或合并产物检查中识别运行时超限，删除临时文件并置为 `skip`。下载器内部区分用户配置上限与资源保护安全上限，只有前者会写入 `video_size_limit_flags` 并参与 `exceeds_max_size` 派生；已知完整大小时同步回填 `video_sizes`，流式中止时不推测文件总大小。
 - 发送阶段：独立节点采用 best-effort，部分失败会给用户明确提示；预期节点全部发送失败时抛出聚合错误，不再记录虚假的“发送完成”。主发送异常始终进入 finally 清理。
 - 外部依赖：DASH/M3U8/图片转换涉及 ffmpeg，TikTok 涉及系统 curl，文本元数据图片渲染依赖 Pillow 和可用中文字体，README 截图依赖 Playwright 与预先安装的 Chromium；超时或取消路径会终止并回收子进程。
+
+## 六、本地调试与验证
+
+在仓库根目录执行 `python run_local.py`，按提示输入链接，可检查解析结果并确认是否下载。入口递归发现平台解析器，按固定平台顺序注册；纯音频与仅有 README 截图的结果也进入富媒体下载候选。该入口验证解析与下载，不模拟真实消息平台的发送、登录和权限环境。
+
+测试集中放在根目录 `test/`，使用标准库 unittest 且不加入版本控制。修改后只显式执行相关测试文件；涉及不同 AstrBot 运行时 stub 的文件分别启动 Python 进程，避免 `sys.modules` 状态相互影响，也避免发现历史快照中的测试。定向执行可使用 `python -m unittest discover -s test -p 'test_<相关模块>.py'`；全量回归仅在明确要求时执行。
+
+文档和版本同步时核对配置 schema、插件清单、入口注册与 README 标识，检查相对链接、语法、换行和差异空白。受控网络响应与本地 stub 能验证异常边界和资源清理，实际平台取数、登录及消息发送仍需对应运行环境验证。

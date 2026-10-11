@@ -303,7 +303,9 @@ class ToutiaoParser(BaseVideoParser):
         """校验页面状态中显式提供的内容 ID。"""
         if not isinstance(state, dict):
             raise RuntimeError("今日头条页面状态不是对象")
-        article_info = state.get("articleInfo") or {}
+        article_info = state.get("articleInfo", {})
+        if article_info is None:
+            article_info = {}
         if not isinstance(article_info, dict):
             raise RuntimeError("今日头条 articleInfo 不是对象")
         thread_base = cls._get_thread_base(article_info)
@@ -516,15 +518,21 @@ class ToutiaoParser(BaseVideoParser):
             return []
 
         for _ in range(1, self.article_image_refreshes):
-            refreshed_html = await self._fetch_page_html(session, page_url)
-            refreshed_state = json.loads(self._extract_state_json_text(refreshed_html))
-            self._validate_state_identity(refreshed_state, content_id)
-            refreshed_article_info = refreshed_state.get("articleInfo") or {}
-            refreshed_lists = self._extract_article_image_urls(refreshed_article_info)
-            merged_lists = self._merge_image_candidate_lists(
-                merged_lists,
-                refreshed_lists,
-            )
+            try:
+                refreshed_html = await self._fetch_page_html(session, page_url)
+                refreshed_state = json.loads(self._extract_state_json_text(refreshed_html))
+                self._validate_state_identity(refreshed_state, content_id)
+                refreshed_article_info = refreshed_state.get("articleInfo") or {}
+                refreshed_lists = self._extract_article_image_urls(refreshed_article_info)
+                merged_lists = self._merge_image_candidate_lists(
+                    merged_lists,
+                    refreshed_lists,
+                )
+            except asyncio.CancelledError:
+                raise
+            except (aiohttp.ClientError, asyncio.TimeoutError, RuntimeError, TypeError, ValueError) as exc:
+                logger.warning(f"[{self.name}] 追加图片候选刷新失败，保留已有结果: {exc}")
+                break
         return merged_lists
 
     def _build_article_metadata_from_state(

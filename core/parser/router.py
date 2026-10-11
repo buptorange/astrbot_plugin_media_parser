@@ -22,14 +22,14 @@ class LinkRouter:
             text: 输入文本
 
         Returns:
-            包含(链接, 解析器)元组的列表。原文可定位项按出现位置排序，
-            解析器规范化后无法定位的链接按提取顺序保留在其后。
+            包含(链接, 解析器)元组的列表，按解析器保留的原文位置排序；
+            无法定位的链接按提取顺序保留在其后。
         """
         links_with_position = []
         normalized_link_order = 0
         for parser in self.parsers:
             try:
-                links = parser.extract_links(text)
+                links = parser.extract_links_with_positions(text)
             except Exception:
                 logger.exception(f"解析器 {parser.name} 提取链接失败，已跳过")
                 continue
@@ -37,13 +37,13 @@ class LinkRouter:
                 continue
             if not isinstance(links, list):
                 logger.error(
-                    f"解析器 {parser.name} 的 extract_links 返回了无效类型 "
+                    f"解析器 {parser.name} 的 extract_links_with_positions 返回了无效类型 "
                     f"{type(links).__name__}，已跳过"
                 )
                 continue
             if links:
                 logger.debug(f"解析器 {parser.name} 提取到 {len(links)} 个链接")
-            for link in links:
+            for position, link in links:
                 if not isinstance(link, str) or not link.strip():
                     logger.warning(f"解析器 {parser.name} 返回了无效链接项，已跳过")
                     continue
@@ -51,7 +51,6 @@ class LinkRouter:
                 if is_live_url(link):
                     logger.debug(f"提取到直播域名链接，跳过: {link}")
                     continue
-                position = text.find(link)
                 if position == -1:
                     # 平台解析器可能把移动端或分享链接规范化为标准链接。
                     # 这类链接无法再从原文精确定位，但不能因此丢失。

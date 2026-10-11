@@ -110,14 +110,14 @@ class M3U8Handler:
         self.proxy = proxy
         self.max_concurrent_segments = max_concurrent_segments
 
-    async def fetch_text(self, url: str) -> str:
-        """获取文本内容
+    async def fetch_text(self, url: str) -> Tuple[str, str]:
+        """获取清单文本及最终响应地址
 
         Args:
             url: URL地址
 
         Returns:
-            文本内容
+            (清单文本, 最终响应 URL) 元组，最终地址用于解析清单中的相对 URI。
         """
         attempts = Config.DOWNLOAD_RETRY_ATTEMPTS
         for attempt in range(1, attempts + 1):
@@ -149,7 +149,7 @@ class M3U8Handler:
                         chunks.append(chunk)
                     raw = b"".join(chunks)
                     charset = response.charset or "utf-8"
-                    return raw.decode(charset, errors="replace")
+                    return raw.decode(charset, errors="replace"), str(response.url)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -303,7 +303,7 @@ class M3U8Handler:
             (init_seg_url, segments) 元组，init_seg_url 为 init segment URL（如果有），
             segments 为分片 URL 列表
         """
-        content = await self.fetch_text(url)
+        content, manifest_url = await self.fetch_text(url)
         init_seg = None
         segments = []
 
@@ -328,8 +328,8 @@ class M3U8Handler:
                 segments.append(line)
 
         if init_seg:
-            init_seg = urljoin(url, init_seg)
-        segments = [urljoin(url, segment) for segment in segments]
+            init_seg = urljoin(manifest_url, init_seg)
+        segments = [urljoin(manifest_url, segment) for segment in segments]
         return init_seg, segments
 
     async def download_segments(
@@ -447,7 +447,7 @@ class M3U8Handler:
         Returns:
             (video_m3u8_url, audio_m3u8_url) 元组
         """
-        master = await self.fetch_text(m3u8_url)
+        master, manifest_url = await self.fetch_text(m3u8_url)
         lines = [line.strip() for line in master.splitlines()]
         audio_groups: Dict[str, List[Tuple[bool, str]]] = {}
         variants: List[Tuple[int, int, str, Optional[str]]] = []
@@ -509,12 +509,12 @@ class M3U8Handler:
             variants,
             key=lambda item: (item[0], item[1]),
         )
-        video_m3u8 = urljoin(m3u8_url, selected_uri)
+        video_m3u8 = urljoin(manifest_url, selected_uri)
         audio_m3u8 = None
         candidates = audio_groups.get(selected_audio_group or "", [])
         if candidates:
             _, audio_uri = max(candidates, key=lambda item: item[0])
-            audio_m3u8 = urljoin(m3u8_url, audio_uri)
+            audio_m3u8 = urljoin(manifest_url, audio_uri)
         return video_m3u8, audio_m3u8
 
     async def _publish_single_stream(

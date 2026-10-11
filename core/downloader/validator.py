@@ -105,6 +105,17 @@ def _is_obvious_non_media_preview(content_preview: bytes, media_url: str) -> boo
     return False
 
 
+async def _read_content_preview(response: aiohttp.ClientResponse) -> bytes:
+    """累计读取探测前缀，直到长度足够或正文结束。"""
+    preview = bytearray()
+    while len(preview) < _CONTENT_PREVIEW_CHECK_SIZE:
+        chunk = await response.content.read(_CONTENT_PREVIEW_CHECK_SIZE - len(preview))
+        if not chunk:
+            break
+        preview.extend(chunk)
+    return bytes(preview)
+
+
 async def validate_media_response(
     response: aiohttp.ClientResponse,
     media_url: str,
@@ -147,7 +158,7 @@ async def validate_media_response(
                 raise aiohttp.ClientError("图片Content-Type需要GET请求验证")
             return True, None
 
-        content_preview = await response.content.read(_CONTENT_PREVIEW_CHECK_SIZE)
+        content_preview = await _read_content_preview(response)
         actual_format = detect_supported_image_format(content_preview)
         if not actual_format:
             logger.warning(f"图片URL内容不是受支持的栅格格式: {media_url}")
@@ -165,7 +176,7 @@ async def validate_media_response(
         if not allow_read_content:
             raise aiohttp.ClientError("Content-Type为空，需要GET请求验证")
 
-        content_preview = await response.content.read(_CONTENT_PREVIEW_CHECK_SIZE)
+        content_preview = await _read_content_preview(response)
         if not content_preview:
             return False, None
 
@@ -183,7 +194,7 @@ async def validate_media_response(
         if not allow_read_content:
             raise aiohttp.ClientError("泛型Content-Type需要GET请求验证")
 
-        content_preview = await response.content.read(_CONTENT_PREVIEW_CHECK_SIZE)
+        content_preview = await _read_content_preview(response)
         if not content_preview:
             return False, None
 

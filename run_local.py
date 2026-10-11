@@ -547,7 +547,10 @@ async def parse_and_confirm_download(
 
     has_valid_media = enable_rich_media and any(
         not metadata.get("error")
-        and any(metadata.get(key) for key in ("video_urls", "image_urls", "readme_url"))
+        and any(
+            metadata.get(key)
+            for key in ("video_urls", "image_urls", "audio_urls", "readme_url")
+        )
         for metadata in metadata_list
     )
     has_text_result = enable_text_metadata and any(
@@ -566,7 +569,7 @@ async def parse_and_confirm_download(
         if has_text_result:
             print("\n已解析文本元数据；没有可下载的富媒体内容")
         elif enable_rich_media:
-            print("\n⚠️ 没有找到有效的媒体内容（视频或图片）")
+            print("\n⚠️ 没有找到有效的媒体内容（视频、图片或音频）")
         else:
             print("\n富媒体输出已关闭，跳过下载阶段")
         print("\n" + "=" * 80)

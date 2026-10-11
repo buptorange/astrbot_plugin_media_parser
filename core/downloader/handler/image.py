@@ -11,6 +11,7 @@ import aiohttp
 
 from ...logger import logger
 
+from ...storage import cleanup_file
 from ..budget import MAX_IMAGE_PIXELS, resolve_max_bytes
 from ..fileio import run_blocking
 from ..image_format import (
@@ -29,16 +30,6 @@ def _image_ssl_context(ciphers: str) -> ssl.SSLContext:
     context.set_ciphers(ciphers)
     context.set_alpn_protocols(["http/1.1"])
     return context
-
-
-async def _remove_downloaded_image(file_path: str) -> None:
-    """尽力移除无法使用的已下载图片。"""
-    try:
-        await run_blocking(os.remove, file_path)
-    except FileNotFoundError:
-        pass
-    except OSError as exc:
-        logger.warning(f"清理无效图片失败: {file_path}, 错误: {exc}")
 
 
 async def _wait_ffmpeg_conversion(process, input_path: str) -> bool:
@@ -212,86 +203,88 @@ async def download_image_to_cache(
             "limit_source": limit_source,
         }
 
+    owned_paths = {file_path}
+    delivered_path = None
     try:
-        image_format = await run_blocking(
-            detect_supported_image_file_format,
-            file_path,
-        )
-    except OSError as exc:
-        await _remove_downloaded_image(file_path)
-        return {
-            "file_path": None,
-            "size_mb": None,
-            "status_code": status_code,
-            "error": f"无法读取已下载图片: {exc}",
-        }
-
-    if not image_format:
-        await _remove_downloaded_image(file_path)
-        return {
-            "file_path": None,
-            "size_mb": None,
-            "status_code": status_code,
-            "error": "响应内容不是受支持的栅格图片",
-        }
-
-    normalized_path = normalized_image_path(file_path, image_format)
-    if os.path.normcase(normalized_path) != os.path.normcase(file_path):
         try:
-            await run_blocking(os.replace, file_path, normalized_path)
-            file_path = normalized_path
-        except OSError as exc:
-            await _remove_downloaded_image(file_path)
-            return {
-                "file_path": None,
-                "size_mb": None,
-                "status_code": status_code,
-                "error": f"规范图片文件名失败: {exc}",
-            }
-
-    if image_format not in DIRECT_IMAGE_FORMATS:
-        base_path = os.path.splitext(file_path)[0]
-        png_path = f"{base_path}.png"
-
-        if shutil.which("ffmpeg") is None:
-            logger.warning(
-                f"ffmpeg 未找到，保留图片原格式发送: {file_path}"
+            image_format = await run_blocking(
+                detect_supported_image_file_format,
+                file_path,
             )
-            return {
-                "file_path": file_path,
-                "size_mb": size_mb,
-                "status_code": status_code,
-                "error": "ffmpeg未找到，已保留图片原格式",
-                "converted_to_png": False,
-            }
-
-        if await _convert_image_to_png(file_path, png_path, max_bytes=max_bytes):
-            try:
-                if os.path.exists(file_path):
-                    await run_blocking(os.remove, file_path)
-            except Exception as e:
-                logger.warning(f"删除原图片文件失败: {e}")
-            file_path = png_path
-            try:
-                size_mb = await run_blocking(os.path.getsize, file_path)
-                size_mb /= 1024 * 1024
-            except OSError:
-                pass
-        else:
-            logger.warning(f"图片格式转换失败，拒绝发送原格式: {file_path}")
-            await _remove_downloaded_image(file_path)
+        except OSError as exc:
             return {
                 "file_path": None,
                 "size_mb": None,
                 "status_code": status_code,
-                "error": "图片格式转换失败，原格式不在直接发送范围内",
-                "converted_to_png": False,
+                "error": f"无法读取已下载图片: {exc}",
             }
 
-    return {
-        "file_path": file_path,
-        "size_mb": size_mb,
-        "status_code": status_code,
-        "error": None,
-        "converted_to_png": file_path.lower().endswith(".png"),
-    }
+        if not image_format:
+            return {
+                "file_path": None,
+                "size_mb": None,
+                "status_code": status_code,
+                "error": "响应内容不是受支持的栅格图片",
+            }
+
+        normalized_path = normalized_image_path(file_path, image_format)
+        if os.path.normcase(normalized_path) != os.path.normcase(file_path):
+            # 线程中的改名可能在外层取消后完成，因此先登记两端路径。
+            owned_paths.add(normalized_path)
+            try:
+                await run_blocking(os.replace, file_path, normalized_path)
+                file_path = normalized_path
+            except OSError as exc:
+                return {
+                    "file_path": None,
+                    "size_mb": None,
+                    "status_code": status_code,
+                    "error": f"规范图片文件名失败: {exc}",
+                }
+
+        if image_format not in DIRECT_IMAGE_FORMATS:
+            base_path = os.path.splitext(file_path)[0]
+            png_path = f"{base_path}.png"
+
+            if shutil.which("ffmpeg") is None:
+                logger.warning(f"ffmpeg 未找到，保留图片原格式发送: {file_path}")
+                delivered_path = file_path
+                return {
+                    "file_path": file_path,
+                    "size_mb": size_mb,
+                    "status_code": status_code,
+                    "error": "ffmpeg未找到，已保留图片原格式",
+                    "converted_to_png": False,
+                }
+
+            owned_paths.add(png_path)
+            if await _convert_image_to_png(file_path, png_path, max_bytes=max_bytes):
+                file_path = png_path
+                try:
+                    size_mb = await run_blocking(os.path.getsize, file_path)
+                    size_mb /= 1024 * 1024
+                except OSError:
+                    pass
+            else:
+                logger.warning(f"图片格式转换失败，拒绝发送原格式: {file_path}")
+                return {
+                    "file_path": None,
+                    "size_mb": None,
+                    "status_code": status_code,
+                    "error": "图片格式转换失败，原格式不在直接发送范围内",
+                    "converted_to_png": False,
+                }
+
+        delivered_path = file_path
+        return {
+            "file_path": file_path,
+            "size_mb": size_mb,
+            "status_code": status_code,
+            "error": None,
+            "converted_to_png": file_path.lower().endswith(".png"),
+        }
+    finally:
+        # 只有交付给调用方的路径才能保留，取消与失败均在此回收全部输出。
+        for owned_path in owned_paths:
+            if owned_path != delivered_path:
+                cleanup_file(owned_path)

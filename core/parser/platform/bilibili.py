@@ -612,13 +612,28 @@ class BilibiliParser(BaseVideoParser):
         Returns:
             B站链接列表
         """
-        result_links_set = set()
-        seen_ids = set()
+        return [link for _, link in self.extract_links_with_positions(text)]
+
+    def extract_links_with_positions(self, text: str) -> List[Tuple[int, str]]:
+        """按作品与分 P 去重，并保留规范化前的原文位置。
+
+        Args:
+            text: 输入文本。
+
+        Returns:
+            按原文顺序排列的位置与链接列表。
+        """
+        matched_links = []
+        url_spans = [
+            match.span()
+            for match in re.finditer(r'https?://[^\s<>"\'()\[\]，。！？；：）】》」]+', text, re.IGNORECASE)
+        ]
 
         b23_pattern = r'https?://[Bb]23\.tv/[^\s<>"\'()\[\]]+'
-        b23_links = re.findall(b23_pattern, text, re.IGNORECASE)
+        b23_links = re.finditer(b23_pattern, text, re.IGNORECASE)
         b23_by_key = {}
-        for link in b23_links:
+        for match in b23_links:
+            link = match.group(0).rstrip('，。！？；：）】》」')
             parsed = urlparse(link)
             query = tuple(sorted(
                 (key, value)
@@ -626,39 +641,42 @@ class BilibiliParser(BaseVideoParser):
                 if key not in {"share_medium", "share_source", "bbid", "ts"}
             ))
             key = (parsed.scheme, parsed.netloc.lower(), parsed.path, query, parsed.fragment)
-            if key not in b23_by_key or len(link) > len(b23_by_key[key]):
-                b23_by_key[key] = link
-        result_links_set.update(b23_by_key.values())
+            if key not in b23_by_key:
+                b23_by_key[key] = (match.start(), link)
+            elif len(link) > len(b23_by_key[key][1]):
+                b23_by_key[key] = (b23_by_key[key][0], link)
+        for key, (position, link) in b23_by_key.items():
+            matched_links.append((position, ('B23', key), link))
 
         bilibili_domains = r"(?:www|m|mobile)\.bilibili\.com"
 
         bv_url_pattern = (
             rf"https?://{bilibili_domains}/video/"
-            rf'([Bb][Vv][0-9A-Za-z]{{10,}})[^\s<>"\'()]*'
+            rf'([Bb][Vv][0-9A-Za-z]{{10,}})[^\s<>"\'()\[\]，。！？；：）】》」]*'
         )
         bv_url_matches = re.finditer(bv_url_pattern, text, re.IGNORECASE)
         for match in bv_url_matches:
             bvid = match.group(1)
             if bvid[0:2].upper() != "BV":
                 bvid = "BV" + bvid[2:]
-            bvid_key = f"BV:{bvid}"
-            if bvid_key not in seen_ids:
-                seen_ids.add(bvid_key)
-                normalized_url = f"https://www.bilibili.com/video/{bvid}"
-                result_links_set.add(normalized_url)
+            page = self.extract_p(match.group(0))
+            normalized_url = f"https://www.bilibili.com/video/{bvid}"
+            if page > 1:
+                normalized_url += f"?p={page}"
+            matched_links.append((match.start(), ('VIDEO', bvid, page), normalized_url))
 
         av_url_pattern = (
             rf"https?://{bilibili_domains}/video/"
-            rf'[Aa][Vv](\d+)[^\s<>"\'()]*'
+            rf'[Aa][Vv](\d+)[^\s<>"\'()\[\]，。！？；：）】》」]*'
         )
         av_url_matches = re.finditer(av_url_pattern, text, re.IGNORECASE)
         for match in av_url_matches:
             av_num = match.group(1)
-            av_key = f"AV:{av_num}"
-            if av_key not in seen_ids:
-                seen_ids.add(av_key)
-                av_url = f"https://www.bilibili.com/video/av{av_num}"
-                result_links_set.add(av_url)
+            page = self.extract_p(match.group(0))
+            av_url = f"https://www.bilibili.com/video/av{av_num}"
+            if page > 1:
+                av_url += f"?p={page}"
+            matched_links.append((match.start(), ('VIDEO', av2bv(int(av_num)), page), av_url))
 
         ep_url_pattern = (
             rf"https?://{bilibili_domains}/bangumi/play/"
@@ -667,11 +685,8 @@ class BilibiliParser(BaseVideoParser):
         ep_url_matches = re.finditer(ep_url_pattern, text, re.IGNORECASE)
         for match in ep_url_matches:
             ep_id = match.group(1)
-            ep_key = f"EP:{ep_id}"
-            if ep_key not in seen_ids:
-                seen_ids.add(ep_key)
-                ep_url = f"https://www.bilibili.com/bangumi/play/ep{ep_id}"
-                result_links_set.add(ep_url)
+            ep_url = f"https://www.bilibili.com/bangumi/play/ep{ep_id}"
+            matched_links.append((match.start(), ('EP', ep_id), ep_url))
 
         ss_url_pattern = (
             rf"https?://{bilibili_domains}/bangumi/play/"
@@ -680,49 +695,34 @@ class BilibiliParser(BaseVideoParser):
         ss_url_matches = re.finditer(ss_url_pattern, text, re.IGNORECASE)
         for match in ss_url_matches:
             season_id = match.group(1)
-            ss_key = f"SS:{season_id}"
-            if ss_key not in seen_ids:
-                seen_ids.add(ss_key)
-                ss_url = f"https://www.bilibili.com/bangumi/play/ss{season_id}"
-                result_links_set.add(ss_url)
+            ss_url = f"https://www.bilibili.com/bangumi/play/ss{season_id}"
+            matched_links.append((match.start(), ('SS', season_id), ss_url))
 
-        bv_standalone_pattern = r"\b[Bb][Vv][0-9A-Za-z]{10,}\b"
+        bv_standalone_pattern = r'\b([Bb][Vv][0-9A-Za-z]{10,})\b(?:\?[^\s<>"\'()\[\]，。！？；：）】》」]*)?'
         bv_standalone_matches = re.finditer(bv_standalone_pattern, text, re.IGNORECASE)
         for match in bv_standalone_matches:
-            bvid = match.group(0)
+            if any(start <= match.start() < end for start, end in url_spans):
+                continue
+            bvid = match.group(1)
             if bvid[0:2].upper() != "BV":
                 bvid = "BV" + bvid[2:]
-            bvid_key = f"BV:{bvid}"
-            if bvid_key not in seen_ids:
-                start_pos = match.start()
-                context_start = max(0, start_pos - 50)
-                context_end = min(len(text), match.end() + 10)
-                context = text[context_start:context_end]
-                if (
-                    "http://" not in context.lower()
-                    and "https://" not in context.lower()
-                ):
-                    seen_ids.add(bvid_key)
-                    bv_url = f"https://www.bilibili.com/video/{bvid}"
-                    result_links_set.add(bv_url)
+            page = self.extract_p(match.group(0))
+            bv_url = f"https://www.bilibili.com/video/{bvid}"
+            if page > 1:
+                bv_url += f"?p={page}"
+            matched_links.append((match.start(), ('VIDEO', bvid, page), bv_url))
 
-        av_standalone_pattern = r"\b[Aa][Vv](\d+)\b"
+        av_standalone_pattern = r'\b[Aa][Vv](\d+)\b(?:\?[^\s<>"\'()\[\]，。！？；：）】》」]*)?'
         av_standalone_matches = re.finditer(av_standalone_pattern, text, re.IGNORECASE)
         for match in av_standalone_matches:
             av_num = match.group(1)
-            av_key = f"AV:{av_num}"
-            if av_key not in seen_ids:
-                start_pos = match.start()
-                context_start = max(0, start_pos - 50)
-                context_end = min(len(text), match.end() + 10)
-                context = text[context_start:context_end]
-                if (
-                    "http://" not in context.lower()
-                    and "https://" not in context.lower()
-                ):
-                    seen_ids.add(av_key)
-                    av_url = f"https://www.bilibili.com/video/av{av_num}"
-                    result_links_set.add(av_url)
+            if any(start <= match.start() < end for start, end in url_spans):
+                continue
+            page = self.extract_p(match.group(0))
+            av_url = f"https://www.bilibili.com/video/av{av_num}"
+            if page > 1:
+                av_url += f"?p={page}"
+            matched_links.append((match.start(), ('VIDEO', av2bv(int(av_num)), page), av_url))
 
         opus_pattern = (
             r"https?://(?:www|m|mobile)\.bilibili\.com/opus/"
@@ -731,11 +731,8 @@ class BilibiliParser(BaseVideoParser):
         opus_matches = re.finditer(opus_pattern, text, re.IGNORECASE)
         for match in opus_matches:
             opus_id = match.group(1)
-            opus_key = f"OPUS:{opus_id}"
-            if opus_key not in seen_ids:
-                seen_ids.add(opus_key)
-                opus_url = f"https://www.bilibili.com/opus/{opus_id}"
-                result_links_set.add(opus_url)
+            opus_url = f"https://www.bilibili.com/opus/{opus_id}"
+            matched_links.append((match.start(), ('OPUS', opus_id), opus_url))
 
         t_bilibili_pattern = (
             r"https?://t\.bilibili\.com/"
@@ -744,16 +741,18 @@ class BilibiliParser(BaseVideoParser):
         t_bilibili_matches = re.finditer(t_bilibili_pattern, text, re.IGNORECASE)
         for match in t_bilibili_matches:
             dynamic_id = match.group(1)
-            dynamic_key = f"T:{dynamic_id}"
-            if dynamic_key not in seen_ids:
-                seen_ids.add(dynamic_key)
-                t_bilibili_url = f"https://t.bilibili.com/{dynamic_id}"
-                result_links_set.add(t_bilibili_url)
+            t_bilibili_url = f"https://t.bilibili.com/{dynamic_id}"
+            matched_links.append((match.start(), ('T', dynamic_id), t_bilibili_url))
 
-        result = list(result_links_set)
+        result = []
+        seen_ids = set()
+        for position, key, link in sorted(matched_links, key=lambda item: item[0]):
+            if key not in seen_ids:
+                seen_ids.add(key)
+                result.append((position, link))
         if result:
             logger.debug(
-                f"[{self.name}] extract_links: 提取到 {len(result)} 个链接: {result[:3]}{'...' if len(result) > 3 else ''}"
+                f"[{self.name}] extract_links: 提取到 {len(result)} 个链接: {[link for _, link in result[:3]]}{'...' if len(result) > 3 else ''}"
             )
         else:
             logger.debug(f"[{self.name}] extract_links: 未提取到链接")
@@ -789,8 +788,8 @@ class BilibiliParser(BaseVideoParser):
             分P序号，默认为1
         """
         try:
-            return int(parse_qs(urlparse(url).query).get("p", ["1"])[0])
-        except Exception:
+            return max(1, int(parse_qs(urlparse(url).query).get("p", ["1"])[0]))
+        except (TypeError, ValueError):
             return 1
 
     def extract_opus_id(self, url: str) -> Optional[str]:

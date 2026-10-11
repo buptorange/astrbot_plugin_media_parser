@@ -29,7 +29,6 @@ from .core.storage import (
     register_files_with_token_service,
 )
 from .core.constants import Config
-from .core.message_adapter.font_manager import FontDownloadError, ensure_default_fonts
 from .core.message_adapter.sender import MessageDeliveryError, MessageSender
 from .core.message_adapter.node_builder import (
     build_all_nodes,
@@ -38,7 +37,7 @@ from .core.message_adapter.node_builder import (
     summarize_node_counts,
     strip_text_metadata_nodes,
 )
-from .core.message_adapter.text_renderer import render_text_metadata_images
+from .core.message_adapter.text_renderer import ensure_render_fonts, render_text_metadata_images
 from .core.message_adapter.archive_builder import (
     ArchiveSizeLimitError,
     build_zip_archive,
@@ -54,7 +53,7 @@ from .core.interaction.platform.bilibili import BilibiliAdminCookieAssistManager
     "astrbot_plugin_media_parser",
     "drdon1234",
     "聚合解析平台分享内容，发送视频、音频、图片与文本",
-    "1.11.0",
+    "1.11.1",
 )
 class VideoParserPlugin(Star):
     def __init__(self, context: Context, config: dict):
@@ -112,12 +111,18 @@ class VideoParserPlugin(Star):
         self._start_expired_cache_cleanup()
 
     async def initialize(self) -> None:
-        """插件加载时检查并补全图片渲染字体。"""
+        """仅启用文本图片时准备本地字体，必要时补全默认资源。"""
+        text_metadata = self.config_manager.message.text_metadata
+        if not text_metadata.render_to_image:
+            return
         try:
-            await ensure_default_fonts(self.config_manager.proxy.font_proxy_url())
+            await ensure_render_fonts(
+                text_metadata.render_font_family,
+                self.config_manager.proxy.font_proxy_url(),
+            )
         except asyncio.CancelledError:
             raise
-        except FontDownloadError as exc:
+        except RuntimeError as exc:
             self.logger.warning(
                 f"字体资源补全失败，插件将继续加载，文本图片渲染会回退原文本: {exc}"
             )

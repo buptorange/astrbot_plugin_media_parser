@@ -9,7 +9,7 @@ main.py                  # 插件入口，VideoParserPlugin(Star)
 run_local.py             # 本地调试脚本，命令行验证解析与下载流程
 _conf_schema.json        # AstrBot WebUI 配置面板 JSON Schema
 metadata.yaml            # AstrBot 插件清单（名称、版本、依赖版本范围）
-requirements.txt         # Python 依赖（aiohttp / cryptography / qrcode / pillow）
+requirements.txt         # Python 依赖（aiohttp / cryptography / qrcode / pillow / playwright）
 docs/                    # 文档索引、架构说明与平台解析备忘
 resource/font/           # 字体许可证与字体资源说明
 core/
@@ -173,6 +173,7 @@ from .base import BaseVideoParser
 ### 关键约定
 
 - `parse()` 返回 `Optional[MediaMetadata]`；解析失败时抛出异常，由 `ParserManager` 统一转换为含 `"error"` 键的结果。
+- `LinkRouter` 通过 `extract_links_with_positions()` 获取链接及原文位置；基类默认调用 `extract_links()` 并定位原文。规范化会改变链接文本且需要保留消息顺序的平台，应在自身解析器内重写该入口并保留匹配位置，无法定位时使用 `-1`。
 - 下载管理器通过回填 `MediaMetadata` 中的下载阶段字段传递结果，不引入额外数据结构。
 - `__init__.py` 作为子包的导出面，使用 `__all__` 暴露公开 API。
 - AstrBot 更新插件时会删除并替换整个插件目录；运行时下载或生成、需要跨插件更新保留的文件（如默认字体）必须落盘到 AstrBot 插件持久化数据目录 `data/plugin_data/astrbot_plugin_media_parser/`，路径统一经 `config_manager` 获取，不得写入插件目录。
@@ -192,6 +193,7 @@ from .base import BaseVideoParser
 - 不依赖 pytest，不引入第三方 mock 框架；优先用内联轻量 stub 类，需要打补丁时用标准库 `unittest.mock`。
 - AstrBot 运行时模块通过 `sys.modules` 注入 stub。
 - 修改后只运行与本次改动直接相关的测试；用户要求全量回归时运行 `python -m unittest discover -s test`。
+- 多个测试文件注入不同运行时 stub 时，按显式文件在独立 Python 进程中执行，避免模块状态串用；不递归发现本地历史快照中的测试。
 - 所有测试文件和用例统一放在根目录 `test/`，不加入 Git 跟踪、暂存、提交或推送，不使用强制添加绕过忽略规则。
 - 根目录 `.gitignore` 必须包含 `/test/`，提交或暂存前确认规则有效；发现已跟踪测试时，保留本地文件，从索引移除并迁入 `test/` 后再继续 Git 操作。
 

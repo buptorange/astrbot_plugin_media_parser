@@ -21,6 +21,10 @@ MAX_RENDER_FONT_SIZE = 42
 DEFAULT_LINE_SPACING = 1.55
 DEFAULT_PARAGRAPH_SPACING = 1.0
 PAGINATED_MAX_HEIGHT = 1800
+MAX_RENDER_HEIGHT = 16384
+MAX_RENDER_PAGE_PIXELS = 16000000
+MAX_RENDER_TOTAL_PIXELS = 32000000
+MAX_RENDER_PAGES = 20
 TEXT_SECTION_SEPARATOR = "-------------------------------------"
 NO_LINE_START_CHARS = "，。！？；：、,.!?;:)]}）】》〉」』”’％%…"
 NO_LINE_END_CHARS = "([{（【《〈「『“‘"
@@ -79,40 +83,84 @@ async def render_text_metadata_images(
 
     Raises:
         RuntimeError: Pillow 不可用、字体加载失败或图片未生成。
+        ValueError: 文本为空或排版超过渲染资源预算。
         asyncio.TimeoutError: 渲染超时。
     """
     if not str(text or "").strip():
         raise ValueError("没有可渲染的文本元数据")
 
-    await ensure_default_fonts(font_proxy_url)
+    await ensure_render_fonts(font_family, font_proxy_url)
     output = Path(output_path).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
+    render_timeout = max(10, int(timeout_seconds or 60))
+    task = asyncio.create_task(asyncio.to_thread(
+        _render_text_metadata_image_sync,
+        str(text),
+        output,
+        str(title or "媒体解析结果"),
+        _normalize_width(width),
+        _normalize_font_size(font_size),
+        _normalize_style(style),
+        _normalize_font_family(font_family),
+        PAGINATED_MAX_HEIGHT if paginate else 0,
+        _normalize_spacing(line_spacing, DEFAULT_LINE_SPACING, 1.0),
+        _normalize_spacing(paragraph_spacing, DEFAULT_PARAGRAPH_SPACING, 0.0),
+    ))
+    completed = False
     try:
         paths = await asyncio.wait_for(
-            asyncio.to_thread(
-                _render_text_metadata_image_sync,
-                str(text),
-                output,
-                str(title or "媒体解析结果"),
-                _normalize_width(width),
-                _normalize_font_size(font_size),
-                _normalize_style(style),
-                _normalize_font_family(font_family),
-                PAGINATED_MAX_HEIGHT if paginate else 0,
-                _normalize_spacing(line_spacing, DEFAULT_LINE_SPACING, 1.0),
-                _normalize_spacing(paragraph_spacing, DEFAULT_PARAGRAPH_SPACING, 0.0),
-            ),
-            timeout=max(10, int(timeout_seconds or 60)),
+            asyncio.shield(task),
+            timeout=render_timeout,
         )
+        if not paths or any(
+            not Path(path).is_file() or Path(path).stat().st_size <= 0 for path in paths
+        ):
+            raise RuntimeError("文本元数据图片未生成有效文件")
+        completed = True
+        return paths
     except (asyncio.CancelledError, asyncio.TimeoutError):
-        _remove_rendered_pages(output)
+        # 线程无法随协程取消；观察真实结束，二次取消也不能跳过最终清理。
+        completion = asyncio.gather(task, return_exceptions=True)
+        while not completion.done():
+            try:
+                await asyncio.shield(completion)
+            except asyncio.CancelledError:
+                continue
         raise
-    if not paths or any(
-        not Path(path).is_file() or Path(path).stat().st_size <= 0 for path in paths
-    ):
-        _remove_rendered_pages(output)
-        raise RuntimeError("文本元数据图片未生成有效文件")
-    return paths
+    finally:
+        if not completed:
+            _remove_rendered_pages(output)
+
+
+async def ensure_render_fonts(
+    font_family: str = DEFAULT_RENDER_FONT_FAMILY,
+    proxy_url: str = "",
+) -> None:
+    """优先使用有效本地字体，仅缺少可用字体时补全默认资源。
+
+    Args:
+        font_family: 文本图片配置的字体族。
+        proxy_url: 补全默认字体时使用的代理地址。
+    """
+    if await asyncio.to_thread(_render_fonts_are_available, font_family):
+        return
+    await ensure_default_fonts(proxy_url)
+    if not await asyncio.to_thread(_render_fonts_are_available, font_family):
+        raise RuntimeError("默认字体补全后仍无法加载文本图片字体")
+
+
+def _render_fonts_are_available(font_family: str) -> bool:
+    """以实际字体加载同时确认普通和强调文字可以离线绘制。"""
+    try:
+        from PIL import ImageFont
+    except ImportError as exc:
+        raise RuntimeError("缺少 Pillow，无法渲染文本元数据图片") from exc
+    try:
+        _load_font(ImageFont, DEFAULT_RENDER_FONT_SIZE, font_family=font_family)
+        _load_font(ImageFont, DEFAULT_RENDER_FONT_SIZE, True, font_family)
+    except RuntimeError:
+        return False
+    return True
 
 
 def _page_path(output: Path, index: int, total: int) -> Path:
@@ -190,53 +238,62 @@ def _render_text_metadata_image_sync(
         "meta": _load_font(ImageFont, meta_size, font_family=font_family),
         "label": _load_font(ImageFont, meta_size, True, font_family),
     }
-    probe = Image.new("RGB", (width, 1), palette["background"])
-    probe_draw = ImageDraw.Draw(probe)
-    margin = max(24, width // 30)
-    padding = max(28, width // 20)
-    body_x = margin + padding
-    content_width = width - body_x * 2
-    lines = _layout_text(
-        probe_draw, text, fonts, content_width, line_spacing, paragraph_spacing,
-    )
-    page_font = fonts["meta"]
-    header = _wrap_text(
-        probe_draw, title.strip() or "媒体解析结果", page_font, content_width - 24,
-    )
-    header_height = _line_height(probe_draw, page_font, 1.5)
+    with Image.new("RGB", (width, 1), palette["background"]) as probe:
+        probe_draw = ImageDraw.Draw(probe)
+        margin = max(24, width // 30)
+        padding = max(28, width // 20)
+        body_x = margin + padding
+        content_width = width - body_x * 2
+        lines = _layout_text(
+            probe_draw, text, fonts, content_width, line_spacing, paragraph_spacing,
+        )
+        page_font = fonts["meta"]
+        header = _wrap_text(
+            probe_draw, title.strip() or "媒体解析结果", page_font, content_width - 24,
+        )
+        header_height = _line_height(probe_draw, page_font, 1.5)
     body_top = margin + padding + len(header) * header_height + 24
     footer_height = header_height + 28
     capacity = max_height - body_top - padding - footer_height - margin
     pages = _paginate_lines(lines, capacity) if max_height > 0 else [lines]
+    heights = [
+        body_top + sum(line.height for line in page) + padding + footer_height + margin
+        for page in pages
+    ]
+    height_limit = min(max_height, MAX_RENDER_HEIGHT) if max_height > 0 else MAX_RENDER_HEIGHT
+    if (
+        len(pages) > MAX_RENDER_PAGES
+        or any(height > height_limit or width * height > MAX_RENDER_PAGE_PIXELS for height in heights)
+        or width * sum(heights) > MAX_RENDER_TOTAL_PIXELS
+    ):
+        raise ValueError("文本图片超出高度、页数或像素预算上限，请使用原文本")
 
     output.parent.mkdir(parents=True, exist_ok=True)
     written: List[str] = []
+    completed = False
     try:
         for page_index, page_lines in enumerate(pages, start=1):
             card_bottom = body_top + sum(line.height for line in page_lines) + padding
             height = card_bottom + footer_height + margin
-            image = Image.new("RGB", (width, height), palette["background"])
-            draw = ImageDraw.Draw(image)
-            _draw_page(
-                draw, page_lines, header=header, fonts=fonts, width=width,
-                margin=margin, padding=padding, body_top=body_top,
-                card_bottom=card_bottom, header_height=header_height, palette=palette,
-            )
-            page_label = f"{page_index:02d} / {len(pages):02d}"
-            _draw_text(
-                draw, (width - _text_width(draw, page_label, page_font)) / 2,
-                card_bottom + 18, page_label, page_font, palette["muted_text"],
-            )
             page_path = _page_path(output, page_index, len(pages))
-            image.save(page_path, format="PNG")
+            with Image.new("RGB", (width, height), palette["background"]) as image:
+                draw = ImageDraw.Draw(image)
+                _draw_page(
+                    draw, page_lines, header=header, fonts=fonts, width=width,
+                    margin=margin, padding=padding, body_top=body_top,
+                    card_bottom=card_bottom, header_height=header_height, palette=palette,
+                )
+                page_label = f"{page_index:02d} / {len(pages):02d}"
+                _draw_text(
+                    draw, (width - _text_width(draw, page_label, page_font)) / 2,
+                    card_bottom + 18, page_label, page_font, palette["muted_text"],
+                )
+                image.save(page_path, format="PNG")
             written.append(str(page_path))
-    except (OSError, ValueError):
-        for path in written:
-            try:
-                Path(path).unlink(missing_ok=True)
-            except OSError:
-                pass
-        raise
+        completed = True
+    finally:
+        if not completed:
+            _remove_rendered_pages(output)
     return written
 
 
@@ -629,11 +686,21 @@ def _load_font(
     candidates = [
         configured_path,
         *family_paths.get(family, ()),
-        "C:/Windows/Fonts/simhei.ttf",
-        str(FONT_DIR / "NotoSansCJKsc-Bold.otf")
-        if bold
-        else str(FONT_DIR / "NotoSansCJKsc-Regular.otf"),
     ]
+    if bold:
+        # 没有专用粗体时沿用相同字体族的常规字体，不因强调文字强制联网。
+        candidates.extend(
+            candidate.replace("-Bold", "-Regular").replace("-Medium", "-Regular").replace("msyhbd", "msyh")
+            for candidate in family_paths.get(family, ())
+        )
+    if family != "noto_sans":
+        candidates.extend(family_paths["noto_sans"])
+        if bold:
+            candidates.extend(
+                candidate.replace("-Bold", "-Regular").replace("msyhbd", "msyh")
+                for candidate in family_paths["noto_sans"]
+            )
+    candidates.append("C:/Windows/Fonts/simhei.ttf")
     for candidate in candidates:
         if not candidate or not os.path.isfile(candidate):
             continue

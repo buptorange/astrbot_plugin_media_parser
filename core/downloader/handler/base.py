@@ -35,6 +35,7 @@ def _is_retryable_exception(exc: BaseException) -> bool:
         aiohttp.ServerDisconnectedError,
         aiohttp.ServerTimeoutError,
         aiohttp.ClientOSError,
+        aiohttp.ClientPayloadError,
         asyncio.TimeoutError,
     )
     if isinstance(exc, retryable_types):
@@ -403,12 +404,13 @@ async def download_media_stream(
         is_video: 是否为视频（True为视频使用流式下载，False为图片使用完整下载）
 
     Returns:
-        下载是否成功
+        成功时返回 True；失败时清理未提交文件并保留原始异常，由调用方判断重试。
     """
     active_budget = budget or create_byte_budget(max_bytes, is_video=is_video)
     temp_path = _temporary_path(file_path)
     written = 0
     output_file = None
+    completed = False
     try:
         file_dir = os.path.dirname(file_path)
         if file_dir:
@@ -439,23 +441,22 @@ async def download_media_stream(
         await run_blocking(output_file.close)
         output_file = None
         _replace_file(temp_path, file_path)
+        completed = True
         return True
-    except (asyncio.CancelledError, DownloadLimitExceeded):
-        if output_file is not None:
-            await run_blocking(output_file.close)
-        cleanup_file(temp_path)
-        await active_budget.release(written)
+    except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
+        logger.warning(f"下载媒体流失败: {file_path}, 错误: {exc}")
         raise
-    except Exception as e:
-        logger.warning(f"下载媒体流失败: {file_path}, 错误: {e}")
-        if output_file is not None:
+    finally:
+        if not completed:
             try:
-                await run_blocking(output_file.close)
-            except Exception:
-                pass
-        cleanup_file(temp_path)
-        await active_budget.release(written)
-        return False
+                if output_file is not None:
+                    try:
+                        await run_blocking(output_file.close)
+                    except OSError as exc:
+                        logger.warning(f"关闭媒体临时文件失败: {temp_path}, 错误: {exc}")
+            finally:
+                cleanup_file(temp_path)
+                await active_budget.release(written)
 
 
 async def download_media_from_url(

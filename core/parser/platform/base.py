@@ -1,6 +1,6 @@
 """平台解析器抽象基类，定义统一接口与结果规范。"""
 from abc import ABC, abstractmethod
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 import aiohttp
 
@@ -44,6 +44,22 @@ class BaseVideoParser(ABC):
             提取到的链接列表
         """
         pass
+
+    def extract_links_with_positions(self, text: str) -> List[Tuple[int, str]]:
+        """提取链接及其原文位置，规范化链接由对应解析器保留来源位置。
+
+        Args:
+            text: 输入文本。
+
+        Returns:
+            原文位置与链接的列表，无法定位时位置为 -1。
+        """
+        links = self.extract_links(text)
+        if links is None:
+            return []
+        if not isinstance(links, list):
+            raise ValueError("提取链接结果必须为列表")
+        return [(text.find(link.strip()) if isinstance(link, str) else -1, link) for link in links]
 
     @abstractmethod
     async def parse(

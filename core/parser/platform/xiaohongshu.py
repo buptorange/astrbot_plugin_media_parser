@@ -1,10 +1,10 @@
-"core.parser.platform.xiaohongshu 模块。"
+"""小红书解析器，按目标笔记提取媒体、正文和同一作品的评论。"""
 
 import asyncio
 import json
 import re
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from urllib.parse import (
     parse_qsl,
     urlencode,
@@ -240,7 +240,7 @@ class XiaohongshuParser(BaseVideoParser):
         else:
             return self.headers
 
-    async def _fetch_page(self, session: aiohttp.ClientSession, url: str) -> str:
+    async def _fetch_page(self, session: aiohttp.ClientSession, url: str) -> Tuple[str, str]:
         """获取页面HTML内容
 
         Args:
@@ -248,7 +248,7 @@ class XiaohongshuParser(BaseVideoParser):
             url: 页面URL
 
         Returns:
-            HTML内容
+            HTML内容与重定向后的最终页面地址
 
         Raises:
             RuntimeError: 当无法获取页面内容时
@@ -256,7 +256,7 @@ class XiaohongshuParser(BaseVideoParser):
         headers = self._get_headers_for_url(url)
         async with session.get(url, headers=headers) as response:
             if response.status == 200:
-                return await response.text()
+                return await response.text(), str(response.url)
             raise RuntimeError(f"无法获取页面内容，状态码: {response.status}")
 
     def _extract_initial_state(self, html: str) -> dict:
@@ -399,7 +399,51 @@ class XiaohongshuParser(BaseVideoParser):
                 return candidates[0][-1]
         return ""
 
-    def _parse_note_data(self, data: dict, url: str = "") -> dict:
+    @classmethod
+    def _extract_note_id(cls, url: str) -> str:
+        """仅从正式小红书笔记页识别目标 ID。"""
+        try:
+            parsed = urlparse(url)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("小红书笔记地址无效") from exc
+        if (
+            parsed.scheme.lower() not in {"http", "https"}
+            or not cls._host_matches(parsed.hostname or "", "xiaohongshu.com")
+        ):
+            raise RuntimeError("小红书页面未返回正式笔记地址")
+        match = re.fullmatch(r"/(?:explore|discovery/item)/([^/]+)/?", parsed.path)
+        if not match:
+            raise RuntimeError("小红书页面地址缺少笔记 ID")
+        return match.group(1)
+
+    def _select_note_node(
+        self, state: Dict[str, Any], url: str,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """同时确定目标笔记与评论范围，不以其他节点补齐目标内容。"""
+        target_id = self._extract_note_id(url)
+        if not isinstance(state, dict):
+            raise RuntimeError("小红书页面状态不是对象")
+        mobile = state.get("noteData")
+        mobile = mobile.get("data") if isinstance(mobile, dict) else None
+        note_data = mobile.get("noteData") if isinstance(mobile, dict) else None
+        if isinstance(note_data, dict) and note_data:
+            scope = mobile
+            note_id = note_data.get("noteId") or note_data.get("note_id") or note_data.get("id")
+            if str(note_id or "") != target_id:
+                raise RuntimeError("小红书移动页面返回了其他笔记的数据")
+        else:
+            note = state.get("note")
+            note_map = note.get("noteDetailMap") if isinstance(note, dict) else None
+            scope = note_map.get(target_id) if isinstance(note_map, dict) else None
+            note_data = scope.get("note") if isinstance(scope, dict) else None
+            if not isinstance(note_data, dict) or not note_data:
+                raise RuntimeError("小红书页面中没有目标笔记数据")
+            note_id = note_data.get("noteId") or note_data.get("note_id") or note_data.get("id")
+            if note_id is not None and str(note_id) != target_id:
+                raise RuntimeError("小红书笔记节点的 ID 与目标不一致")
+        return note_data, scope
+
+    def _parse_note_data(self, data: dict, url: str) -> dict:
         """从JSON数据中提取所需信息
 
         支持移动端和PC端两种数据路径：
@@ -408,7 +452,7 @@ class XiaohongshuParser(BaseVideoParser):
 
         Args:
             data: JSON数据字典
-            url: 原始URL，用于判断数据路径
+            url: 最终页面地址，用于确定目标笔记
 
         Returns:
             包含笔记信息的字典，包含以下字段：
@@ -424,30 +468,10 @@ class XiaohongshuParser(BaseVideoParser):
         Raises:
             RuntimeError: 当数据提取失败时
         """
-        note_data = None
-        user_data = {}
-        try:
-            note_data = data["noteData"]["data"]["noteData"]
-            user_data = note_data.get("user", {})
-        except (KeyError, TypeError):
-            pass
-
-        if not note_data:
-            try:
-                note_detail_map = data.get("note", {}).get("noteDetailMap", {})
-                for detail in note_detail_map.values():
-                    potential = detail.get("note")
-                    if potential and isinstance(potential, dict) and potential:
-                        note_data = potential
-                        user_data = note_data.get("user", {})
-                        break
-            except (KeyError, TypeError):
-                pass
-
-        if not note_data:
-            raise RuntimeError(
-                "无法找到笔记数据，JSON结构可能不同（移动端和PC端路径都失败）"
-            )
+        note_data, _ = self._select_note_node(data, url)
+        user_data = note_data.get("user") or {}
+        if not isinstance(user_data, dict):
+            user_data = {}
 
         note_type = note_data.get("type", "normal")
         title = note_data.get("title", "")
@@ -598,69 +622,44 @@ class XiaohongshuParser(BaseVideoParser):
             "time": self._format_comment_time(created),
         }
 
-    def _extract_primary_comments(self, state: Dict[str, Any]) -> List[Dict[str, Any]]:
-        "处理extract primary comments逻辑。"
-        note_data_comments = (
-            ((state.get("noteData") or {}).get("data") or {}).get("commentData") or {}
-        ).get("comments") or []
-        if isinstance(note_data_comments, list) and note_data_comments:
-            return [x for x in note_data_comments if isinstance(x, dict)]
-
-        comment_data_comments = (
-            ((state.get("commentData") or {}).get("comments") or [])
-            if isinstance(state, dict)
-            else []
-        )
-        if isinstance(comment_data_comments, list) and comment_data_comments:
-            return [x for x in comment_data_comments if isinstance(x, dict)]
-
-        note = state.get("note") or {}
-        note_map = note.get("noteDetailMap") or {}
-        if isinstance(note_map, dict):
-            for item in note_map.values():
-                comments_dict = (item or {}).get("comments") or {}
-                comments_list = comments_dict.get("list") or []
-                if isinstance(comments_list, list) and comments_list:
-                    return [x for x in comments_list if isinstance(x, dict)]
-
+    def _extract_primary_comments(
+        self, state: Dict[str, Any], url: str,
+    ) -> List[Dict[str, Any]]:
+        """仅读取目标节点的评论，全局评论必须显式声明相同笔记 ID。"""
+        _, scope = self._select_note_node(state, url)
+        target_id = self._extract_note_id(url)
+        containers = [scope.get("commentData"), scope.get("comments"), scope.get("commentList")]
+        global_comments = state.get("commentData")
+        if isinstance(global_comments, dict):
+            global_id = global_comments.get("noteId") or global_comments.get("note_id")
+            if str(global_id or "") == target_id:
+                containers.append(global_comments)
+        for container in containers:
+            if isinstance(container, dict):
+                note_id = container.get("noteId") or container.get("note_id")
+                if note_id is not None and str(note_id) != target_id:
+                    continue
+                container = container.get("comments") or container.get("list") or container.get("commentList")
+            if isinstance(container, list) and container:
+                comments = []
+                for item in container:
+                    if not isinstance(item, dict):
+                        continue
+                    note_id = item.get("noteId") or item.get("note_id")
+                    if note_id is not None and str(note_id) != target_id:
+                        continue
+                    comments.append(item)
+                if comments:
+                    return comments
         return []
 
     def _collect_hot_comments_from_state(
-        self, state: Dict[str, Any]
+        self, state: Dict[str, Any], url: str,
     ) -> List[Dict[str, Any]]:
-        "处理collect hot comments from state逻辑。"
+        """按点赞数收集属于目标笔记的评论。"""
         if self.hot_comment_count <= 0:
             return []
-        candidates = self._extract_primary_comments(state)
-        if not candidates:
-            collected: List[Dict[str, Any]] = []
-
-            def walk(obj: Any) -> None:
-                """递归遍历状态树并收集候选评论项。"""
-                if isinstance(obj, dict):
-                    for key, value in obj.items():
-                        key_lower = key.lower()
-                        if key_lower in {"subcomments", "sub_comments"}:
-                            continue
-                        if key_lower in {"comments", "commentlist"} and isinstance(
-                            value, list
-                        ):
-                            for item in value:
-                                if isinstance(item, dict):
-                                    collected.append(item)
-                        if key_lower == "comments" and isinstance(value, dict):
-                            maybe_list = value.get("list") or []
-                            if isinstance(maybe_list, list):
-                                for item in maybe_list:
-                                    if isinstance(item, dict):
-                                        collected.append(item)
-                        walk(value)
-                elif isinstance(obj, list):
-                    for item in obj:
-                        walk(item)
-
-            walk(state)
-            candidates = collected
+        candidates = self._extract_primary_comments(state, url)
 
         normalized: List[Dict[str, Any]] = []
         seen = set()
@@ -687,7 +686,7 @@ class XiaohongshuParser(BaseVideoParser):
 
         Returns:
             解析结果字典，包含标准化的元数据格式：
-            - url: 原始URL
+            - url: 最终笔记页URL
             - title: 标题
             - author: 作者信息
             - desc: 描述
@@ -731,11 +730,11 @@ class XiaohongshuParser(BaseVideoParser):
             for candidate_url in candidate_urls:
                 try:
                     logger.debug(f"[{self.name}] parse: 获取页面内容 {candidate_url}")
-                    html = await self._fetch_page(session, candidate_url)
+                    html, final_page_url = await self._fetch_page(session, candidate_url)
                     initial_state = self._extract_initial_state(html)
                     candidate_note = self._parse_note_data(
                         initial_state,
-                        candidate_url,
+                        final_page_url,
                     )
                     if candidate_note.get("type") == "video" and not candidate_note.get(
                         "video_url"
@@ -745,15 +744,16 @@ class XiaohongshuParser(BaseVideoParser):
                         "image_urls"
                     ):
                         raise RuntimeError("页面中缺少图片地址")
+                    candidate_comments = self._collect_hot_comments_from_state(initial_state, final_page_url)
                     note_data = candidate_note
-                    hot_comments = self._collect_hot_comments_from_state(initial_state)
-                    selected_page_url = candidate_url
+                    hot_comments = candidate_comments
+                    selected_page_url = final_page_url
                     break
                 except asyncio.CancelledError:
                     raise
                 except SkipParse:
                     raise
-                except Exception as exc:
+                except (aiohttp.ClientError, asyncio.TimeoutError, RuntimeError, TypeError, ValueError) as exc:
                     last_error = exc
                     logger.debug(
                         f"[{self.name}] 页面解析失败，尝试回退: {candidate_url}: {exc}"
@@ -797,7 +797,7 @@ class XiaohongshuParser(BaseVideoParser):
                     raise RuntimeError(f"无法获取视频URL: {url}")
 
                 result_dict = {
-                    "url": url,
+                    "url": full_url,
                     "title": title,
                     "author": author,
                     "desc": desc,
@@ -819,7 +819,7 @@ class XiaohongshuParser(BaseVideoParser):
                     raise RuntimeError(f"无法获取图片URL: {url}")
 
                 result_dict = {
-                    "url": url,
+                    "url": full_url,
                     "title": title,
                     "author": author,
                     "desc": desc,

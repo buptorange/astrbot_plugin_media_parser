@@ -9,7 +9,7 @@ _✨ 自动解析流媒体平台链接，发送视频、音频、图片与文本
 [![License](https://img.shields.io/badge/License-AGPLv3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![AstrBot](https://img.shields.io/badge/AstrBot-Plugin-orange.svg)](https://github.com/AstrBotDevs/AstrBot)
-[![Version](https://img.shields.io/badge/Version-v1.11.0-green.svg)](https://github.com/drdon1234/astrbot_plugin_media_parser)
+[![Version](https://img.shields.io/badge/Version-v1.11.1-green.svg)](https://github.com/drdon1234/astrbot_plugin_media_parser)
 [![GitHub](https://img.shields.io/badge/作者-drdon1234-blue)](https://github.com/drdon1234)
 
 </div>
@@ -56,18 +56,13 @@ _✨ 自动解析流媒体平台链接，发送视频、音频、图片与文本
 
 ## 🚀 快速开始
 
-1. 打开 AstrBot 4.x WebUI → 插件市场搜索 `astrbot_plugin_media_parser` 并安装
-2. 依赖库会根据 `requirements.txt` 自动安装
+1. 在 AstrBot 4.x WebUI 的插件市场搜索 `astrbot_plugin_media_parser` 并安装，依赖库会自动安装
+2. 向机器人发送支持的平台链接，默认自动解析并发送结果
+3. 按需在插件配置中调整输出模式、缓存目录、代理或 Cookie；具体说明见下方对应章节
 
-GitHub、GitLab、Gitee 仓库在开启富媒体输出时会截取 README 正文，默认整张发送；开启“长图自动分页”后才拆分为多张，超过截图长度上限时会提示前往仓库继续阅读。此功能独立于“将文本元数据渲染为图片”开关。需在 **AstrBot 所用的 Python 环境或容器内**安装浏览器：
+---
 
-```sh
-python -m playwright install chromium
-```
-
-Linux 容器缺少浏览器系统依赖时使用 `python -m playwright install --with-deps chromium`。运行用户需能访问安装后的浏览器；没有 README、页面不可访问或浏览器未安装时会提示截图失败，仓库文本概况仍可发送。选择“仅文本”不会启动浏览器。
-
-### 特性
+## ✨ 特性
 
 - 开箱即用，无需配置即可解析大部分平台
 - 自动识别并解析链接
@@ -110,11 +105,25 @@ Linux 容器缺少浏览器系统依赖时使用 `python -m playwright install -
 
 ## 🖼️ 文本元数据图片
 
-在 `消息输出 → 文本元数据` 中开启 `将文本元数据渲染为图片` 后，每次解析会把标题、作者、时间、原始链接、简介/正文、热评和翻译等文本节点合并为一张图片发送；启用正文与配图穿插的内容会在原位置分段渲染。渲染失败时自动保留原文本发送。
+在 `消息输出 → 文本元数据` 中开启 `将文本元数据渲染为图片` 后，每次解析会把标题、作者、时间、原始链接、简介/正文、热评和翻译等文本节点合并为一张图片发送；启用正文与配图穿插的内容会在原位置分段渲染。渲染失败或内容超过图片资源上限时，自动保留完整原文本发送。
 
 可选择 `清新便签`、`科技感`、`专业严肃` 或 `温和卡片` 样式，以及字体、字号（有效范围 16–42）、行距（1.0–3.0）和段落间距（0–3.0）。`长图自动分页` 默认关闭，同时控制文本图片与 README 截图；开启后，高度超过 1800 像素的图片会拆分为多张依次发送。开启 `正文、热评与翻译分区渲染` 后，这三部分分别渲染为独立图片并在各自原位置发送。
 
-默认字体缺失时会从 GitHub 自动下载到 AstrBot 插件数据目录，更新插件后无需重新下载；网络受限时可在 `代理设置` 中开启 `字体资源下载使用代理`；也可以通过 `ASTRBOT_MEDIA_PARSER_FONT` 环境变量指定字体文件，详见[字体资源说明](resource/font/README.md)。
+仅启用文本图片时准备字体，优先使用已有的有效字体，离线也能渲染。缺少可用字体时才从 GitHub 自动下载默认字体到 AstrBot 插件数据目录，更新插件后无需重新下载；网络受限时可在 `代理设置` 中开启 `字体资源下载使用代理`；也可以通过 `ASTRBOT_MEDIA_PARSER_FONT` 环境变量指定字体文件，详见[字体资源说明](resource/font/README.md)。
+
+---
+
+## 📄 仓库 README 截图
+
+GitHub、GitLab、Gitee 仓库在开启富媒体输出时会发送 README 正文截图，保留网页中的文字与配图。默认整张发送；开启 `长图自动分页` 后拆分长图，超过截图长度上限时会提示前往仓库继续阅读。此功能独立于 `将文本元数据渲染为图片`，选择 `仅文本` 时不截图。
+
+使用前需在 **AstrBot 所用的 Python 环境或容器内**安装浏览器：
+
+```sh
+python -m playwright install chromium
+```
+
+Linux 容器缺少浏览器系统依赖时使用 `python -m playwright install --with-deps chromium`，并确保 AstrBot 运行用户能访问安装后的浏览器。没有 README、页面不可访问或浏览器未安装时会提示截图失败；开启文本输出时仍可发送仓库概况。
 
 ---
 

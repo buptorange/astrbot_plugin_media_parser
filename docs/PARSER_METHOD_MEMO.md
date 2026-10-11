@@ -84,7 +84,7 @@ b23.tv / bilibili.com / t.bilibili.com
 
 ### UGC 视频
 
-BV / AV 号定位视频主体，分 P 对应的 `cid` 定位具体播放单元。
+BV / AV 号定位视频主体，分 P 对应的 `cid` 定位具体播放单元。提链保留有效的 `p` 参数，无效或非正数回退第一 P；同一作品按分 P 去重，AV 与对应 BV 视为同一作品。规范化链接同时保留原文位置，使裸编号、移动链接和短链仍按消息顺序交给解析流程。
 
 ```text
 BV / AV
@@ -197,6 +197,8 @@ douyin.com/aweme/v1/web/aweme/detail/
 ### 链接范围与取数流程
 
 支持 `v.kuaishou.com` 短链及 `kuaishou.com`、`gifshow.com`、`chenzhongtech.com` 域名。短链先跳转到真实页面；`gifshow.com`、`chenzhongtech.com` 等域名的链接改写为 `m.gifshow.com` 移动页，因其 SSR 包含完整的作品数据。
+
+提链以中文句末标点、Markdown 括号及尖括号等作为分隔符，避免分享文本改变实际请求路径；有效查询参数及其中的转义签名保持完整。
 
 ```text
 v.kuaishou.com / kuaishou.com / gifshow.com / chenzhongtech.com
@@ -379,10 +381,12 @@ xhslink.com / xhslink.cn / xiaohongshu.com
   ↓
 读取 window.__INITIAL_STATE__
   ├─ 移动端：noteData.data.noteData
-  └─ PC 端：note.noteDetailMap[*].note
+  └─ PC 端：note.noteDetailMap[目标笔记 ID].note
 ```
 
 移动端 `discovery/item` 分享链接只移除 `source` 与 `xhsshare` 参数，随后改写为对应的 PC `explore` 页面并保留其余查询参数。PC 链接中的访问参数可能影响页面是否返回完整状态，不做额外删除。
+
+正文、媒体与评论都依据实际响应的最终笔记页 ID 选择，并校验节点显式声明的笔记身份。桌面状态按目标键取节点，移动状态必须声明相同 ID；目标缺失或身份不符时报告失败，不取其他笔记代替。
 
 ### 字段与媒体
 
@@ -393,7 +397,7 @@ xhslink.com / xhslink.cn / xiaohongshu.com
 
 ### 评论
 
-仅使用页面状态中已下发的评论，按点赞数排序；状态中没有评论时不额外请求评论接口，以避免触发风控。
+仅使用目标笔记节点中已下发的评论，按点赞数排序；全局评论须显式声明相同笔记 ID。目标没有评论时不借用其他节点，也不额外请求评论接口，以避免触发风控。
 
 ## 十一、闲鱼
 
@@ -460,7 +464,7 @@ www.toutiao.com / m.toutiao.com / /w/ / 短链 / 小程序卡片
 
 数据位于 `<script>` 中百分号编码的 JSON，经 `urllib.parse.unquote` 解码后得到 `articleInfo`，包含标题、发布时间、来源、作者、正文 HTML 与封面。正文图片以 `<img src>` 形式嵌入 `articleInfo.content`，无需额外请求；正文文本通过去除标签和 HTML 反转义得到。
 
-文章图片 URL 带签名与过期时间，适合解析后立即下载。缓存可用且启用富媒体时，解析器会有限次刷新页面，以新签名的地址补充候选；解析阶段不探测或下载图片本体。
+文章图片 URL 带签名与过期时间，适合解析后立即下载。缓存可用且启用富媒体时，解析器会有限次刷新页面，以新签名的地址补充候选；解析阶段不探测或下载图片本体。追加刷新遇到网络、页面结构或身份错误时停止刷新并保留首屏及已有候选；取消继续向上传播。成功但重复的签名不会提前终止后续有界刷新。
 
 ### 微头条
 
@@ -1105,8 +1109,11 @@ Issue 接入 `/-/issues/{编号}` 以及 Issue 类型的 `/-/work_items/{编号}
 - 链接最终指向哪种内容形态？
 - 平台前端实际使用的是页面状态、接口 JSON 还是旧版内联数据？
 - 短链与分享参数是否影响稳定 ID 的提取？
+- 规范化链接后，是否仍保留原文位置、分集参数和消息中的出现顺序？
 - 是否存在移动端与 PC 端两套结构？
+- 多节点状态中的正文、媒体与评论是否都属于最终链接指向的同一作品？
 - 视频、图集、音频、转发、引用、番剧与帖子是否需要分流处理？
 - 媒体地址是否依赖 Referer、Cookie、User-Agent 或代理环境？
 - 没有媒体地址时，原因是内容受限、纯文本内容还是解析失败？
+- 追加刷新失败时，是否保留首屏和已有有效候选，并继续传播取消？
 - 兜底逻辑是否可能将防护页、错误页或 HTML / JSON 错误响应误判为媒体？
