@@ -256,6 +256,8 @@ def _render_text_metadata_image_sync(
     footer_height = header_height + 28
     capacity = max_height - body_top - padding - footer_height - margin
     pages = _paginate_lines(lines, capacity) if max_height > 0 else [lines]
+    if len(pages) == 1:
+        footer_height = 0
     heights = [
         body_top + sum(line.height for line in page) + padding + footer_height + margin
         for page in pages
@@ -283,11 +285,12 @@ def _render_text_metadata_image_sync(
                     margin=margin, padding=padding, body_top=body_top,
                     card_bottom=card_bottom, header_height=header_height, palette=palette,
                 )
-                page_label = f"{page_index:02d} / {len(pages):02d}"
-                _draw_text(
-                    draw, (width - _text_width(draw, page_label, page_font)) / 2,
-                    card_bottom + 18, page_label, page_font, palette["muted_text"],
-                )
+                if len(pages) > 1:
+                    page_label = f"{page_index:02d} / {len(pages):02d}"
+                    _draw_text(
+                        draw, (width - _text_width(draw, page_label, page_font)) / 2,
+                        card_bottom + 18, page_label, page_font, palette["muted_text"],
+                    )
                 image.save(page_path, format="PNG")
             written.append(str(page_path))
         completed = True
