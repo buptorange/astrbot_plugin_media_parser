@@ -100,6 +100,8 @@ x/player/wbi/playurl（WBI 签名）
 
 `view` 提供标题、作者、简介与发布时间，`pagelist` 提供分 P 列表与 `cid`，`playurl` 提供播放结构。DASH 请求使用 `fnval=4048`，MP4 兼容回退使用 `fnval=1`；不使用旧版 `/x/player/playurl`、HTML5 平台参数或 `fnval=0` 的 FLV 回退。播放结构可能是普通直链，也可能是 DASH 音视频分离流；解析阶段只识别并保留，合并由下载层完成。
 
+`view` 仅在 HTTP 412 或 JSON 错误码 `-412` 时，复用导航接口密钥与 WBI 签名，回退一次到 `x/web-interface/wbi/view`，并保持原 BV / AV 参数与 Cookie。其他错误直接上报；回退失败同时保留首次风控与回退错误，不继续重试。该回退用于恢复部分环境下的视频信息请求，不保证解除所有风控限制。
+
 ### PGC 番剧
 
 番剧不复用 UGC 链路。入口为 `ep_id` 或 `season_id`；仅有 `season_id` 时，先确定首个可播放的 episode。

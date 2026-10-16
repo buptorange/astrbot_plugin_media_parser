@@ -40,6 +40,8 @@ MAX_AID = 1 << 51
 BASE = 58
 NAV_API = "https://api.bilibili.com/x/web-interface/nav"
 HOT_COMMENT_API = "https://api.bilibili.com/x/v2/reply/wbi/main"
+UGC_INFO_API = "https://api.bilibili.com/x/web-interface/view"
+UGC_WBI_INFO_API = "https://api.bilibili.com/x/web-interface/wbi/view"
 UGC_PLAYURL_API = "https://api.bilibili.com/x/player/wbi/playurl"
 PGC_PLAYURL_API = "https://api.bilibili.com/pgc/player/web/v2/playurl"
 HOT_COMMENT_MODE = 3
@@ -1354,7 +1356,6 @@ class BilibiliParser(BaseVideoParser):
             ValueError: bvid和aid都未提供时
             RuntimeError: 当API返回错误时
         """
-        api = "https://api.bilibili.com/x/web-interface/view"
         params = {}
         if bvid:
             params["bvid"] = bvid
@@ -1362,14 +1363,56 @@ class BilibiliParser(BaseVideoParser):
             params["aid"] = self._prepare_aid_param(aid)
         else:
             raise ValueError("必须提供bvid或aid参数")
-        async with session.get(
-            api,
-            params=params,
-            headers=self._build_api_headers(cookie_header=cookie_header),
-            timeout=aiohttp.ClientTimeout(total=10),
-        ) as resp:
-            j = await self._check_json_response(resp)
-        await self._handle_api_response(j, "view")
+        headers = self._build_api_headers(cookie_header=cookie_header)
+        original_error = None
+        for api in (UGC_INFO_API, UGC_WBI_INFO_API):
+            risk_controlled = False
+            api_name = urlparse(api).path
+            try:
+                request_params = params
+                if original_error is not None:
+                    api_name = urlparse(NAV_API).path
+                    mixin_key = await self._get_wbi_mixin_key(session, headers)
+                    api_name = urlparse(api).path
+                    request_params = self._sign_wbi_params(params, mixin_key)
+                async with session.get(
+                    api,
+                    params=request_params,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    api_name = f"{api_name} (HTTP {resp.status})"
+                    risk_controlled = resp.status == 412
+                    if risk_controlled:
+                        raise RuntimeError("请求失败")
+                    if resp.content_type != "application/json":
+                        raise RuntimeError(
+                            "返回非JSON响应 "
+                            f"(Content-Type: {resp.content_type})"
+                        )
+                    j = await self._check_json_response(resp)
+                    risk_controlled = j.get("code") == -412
+                    await self._handle_api_response(j, "UGC视频信息接口")
+                    if resp.status >= 400:
+                        raise RuntimeError("请求失败")
+                break
+            except (
+                aiohttp.ClientError, asyncio.TimeoutError, RuntimeError, ValueError
+            ) as exc:
+                # 传输异常可能包含签名 URL，只记录异常类型及接口路径。
+                error = (
+                    RuntimeError(f"{api_name}：{exc}")
+                    if isinstance(exc, RuntimeError)
+                    else RuntimeError(f"{api_name} 请求失败：{type(exc).__name__}")
+                )
+                if original_error is not None:
+                    raise RuntimeError(
+                        f"UGC视频信息获取失败：{original_error}；WBI回退失败：{error}"
+                    ) from original_error
+                if not risk_controlled:
+                    raise error from None
+                original_error = error
+                logger.warning(f"{error}，尝试使用WBI签名接口获取UGC视频信息")
         data = j["data"]
         title = data.get("title") or ""
         desc = data.get("desc") or ""
