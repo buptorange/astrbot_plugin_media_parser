@@ -197,18 +197,30 @@ def build_text_node(
         return Plain(text)
 
     text_parts = []
+    platform = str(metadata.get("parser_name") or metadata.get("platform") or "").lower()
+    is_xiaohongshu = platform == "xiaohongshu"
+    is_twitter = platform == "twitter"
     desc_text = (
         str(metadata.get("desc") or "").strip()
         if text_metadata_field_enabled(metadata, "description")
         else ""
     )
 
-    if text_metadata_field_enabled(metadata, "title") and metadata.get("title"):
-        text_parts.append(f"标题：{metadata['title']}")
-    if text_metadata_field_enabled(metadata, "author") and metadata.get("author"):
-        text_parts.append(f"作者：{metadata['author']}")
-    if text_metadata_field_enabled(metadata, "timestamp") and metadata.get("timestamp"):
-        text_parts.append(f"发布时间：{metadata['timestamp']}")
+    if is_xiaohongshu:
+        if text_metadata_field_enabled(metadata, "title") and metadata.get("title"):
+            text_parts.append(f"【{metadata['title']}】")
+    elif is_twitter:
+        author = str(metadata.get("author") or "").strip()
+        author = re.sub(r"\((@[^)]+)\)", r"\1", author)
+        if text_metadata_field_enabled(metadata, "author") and author:
+            text_parts.append(f"{author}:")
+    else:
+        if text_metadata_field_enabled(metadata, "title") and metadata.get("title"):
+            text_parts.append(f"标题：{metadata['title']}")
+        if text_metadata_field_enabled(metadata, "author") and metadata.get("author"):
+            text_parts.append(f"作者：{metadata['author']}")
+        if text_metadata_field_enabled(metadata, "timestamp") and metadata.get("timestamp"):
+            text_parts.append(f"发布时间：{metadata['timestamp']}")
 
     video_count = metadata.get("video_count", 0)
     if video_count > 0:
@@ -311,13 +323,18 @@ def build_text_node(
 
     _append_media_skip_summary(text_parts, metadata)
 
-    if text_metadata_field_enabled(metadata, "original_link") and metadata.get("url"):
+    if (
+        not (is_xiaohongshu or is_twitter)
+        and text_metadata_field_enabled(metadata, "original_link")
+        and metadata.get("url")
+    ):
         text_parts.append(f"原始链接：{metadata['url']}")
 
     if desc_text:
-        if text_parts:
+        if text_parts and not (is_xiaohongshu or is_twitter):
             text_parts.append(TEXT_SECTION_SEPARATOR)
-        text_parts.append("简介/正文：")
+        if not (is_xiaohongshu or is_twitter):
+            text_parts.append("简介/正文：")
         if include_description:
             text_parts.append(desc_text)
 

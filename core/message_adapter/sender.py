@@ -9,9 +9,6 @@ from astrbot.api.message_components import File, Nodes, Plain, Image, Node, Reco
 
 from ..logger import logger
 
-from .node_builder import is_pure_image_gallery
-
-
 class MessageDeliveryError(RuntimeError):
     """预期发送的内容全部失败。"""
 
@@ -164,16 +161,21 @@ class MessageSender:
                     )
                 )
             for link_idx, (link_nodes, preserve_order) in enumerate(normal_link_nodes):
-                if not preserve_order and is_pure_image_gallery(link_nodes):
-                    texts = [node for node in link_nodes if isinstance(node, Plain)]
-                    images = [node for node in link_nodes if isinstance(node, Image)]
-                    for text in texts:
+                if not preserve_order:
+                    text_and_images = [
+                        node for node in link_nodes if isinstance(node, (Plain, Image))
+                    ]
+                    other_nodes = [
+                        node for node in link_nodes
+                        if node is not None and not isinstance(node, (Plain, Image))
+                    ]
+                    if text_and_images:
                         flat_nodes.append(
-                            Node(name=sender_name, uin=sender_id, content=[text])
+                            Node(name=sender_name, uin=sender_id, content=text_and_images)
                         )
-                    if images:
+                    for node in other_nodes:
                         flat_nodes.append(
-                            Node(name=sender_name, uin=sender_id, content=images)
+                            Node(name=sender_name, uin=sender_id, content=[node])
                         )
                 else:
                     for node in link_nodes:
@@ -326,33 +328,40 @@ class MessageSender:
                 continue
             meta = self._metadata_for_link(link_metadata, link_idx)
             metadata_text_node = meta.get("metadata_text_node")
-            if not meta.get("preserve_order") and is_pure_image_gallery(link_nodes):
-                texts = [node for node in link_nodes if isinstance(node, Plain)]
-                images = [node for node in link_nodes if isinstance(node, Image)]
-                for text in texts:
+            if not meta.get("preserve_order"):
+                text_and_images = [
+                    node for node in link_nodes if isinstance(node, (Plain, Image))
+                ]
+                other_nodes = [
+                    node for node in link_nodes
+                    if node is not None and not isinstance(node, (Plain, Image))
+                ]
+                if text_and_images:
                     expected += 1
                     try:
-                        await self._send_single_node(
-                            event,
-                            text,
-                            quote_message_id=(
-                                quote_message_id
-                                if quote_user_message and text is metadata_text_node
-                                else ""
-                            ),
-                        )
+                        content = []
+                        if (
+                            quote_user_message
+                            and quote_message_id
+                            and any(
+                                node is metadata_text_node for node in text_and_images
+                            )
+                        ):
+                            content.append(Reply(id=quote_message_id))
+                        content.extend(text_and_images)
+                        await event.send(event.chain_result(content))
                         succeeded += 1
                     except Exception as exc:
                         errors.append(exc)
-                        logger.warning(f"发送文本节点失败: {exc}")
-                if images:
+                        logger.warning(f"发送文字/图片节点失败: {exc}")
+                for node in other_nodes:
                     expected += 1
                     try:
-                        await event.send(event.chain_result(images))
+                        await self._send_single_node(event, node)
                         succeeded += 1
                     except Exception as exc:
                         errors.append(exc)
-                        logger.warning(f"发送图片组失败: {exc}")
+                        logger.warning(f"发送媒体节点失败: {exc}")
             else:
                 for node in link_nodes:
                     if node is not None:
